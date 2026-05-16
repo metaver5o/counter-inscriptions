@@ -1,18 +1,14 @@
-FROM counterparty/counterparty-server:latest
+FROM --platform=linux/amd64 counterparty/counterparty:latest
 
 USER root
 
-# Install lightweight networking tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy and execute the custom MIME parsing patch
-COPY xcp-api-mime/patch_mime.py /tmp/patch_mime.py
+# patch_mime.py is in the same dir as this Dockerfile (xcp-api-mime/)
+# Build context is xcp-api-mime/ when using xcp-api-mime/docker-compose.yml
+COPY patch_mime.py /tmp/patch_mime.py
 RUN python3 /tmp/patch_mime.py && rm /tmp/patch_mime.py
 
-WORKDIR /root
-EXPOSE 4000
+COPY entrypoint.sh /entrypoint-custom.sh
+RUN chmod +x /entrypoint-custom.sh
 
-# Start core binary directly
-CMD ["counterparty-server", "start", "--api-host=0.0.0.0", "--api-port=4000", "--rpc-host=0.0.0.0"]
+EXPOSE 4000
+ENTRYPOINT ["/entrypoint-custom.sh"]

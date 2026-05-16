@@ -1,47 +1,58 @@
 version: '3.8'
 
+# counter-inscriptions — full stack
+# Service names must be consistent: backend uses COUNTERPARTY_URL=http://counterparty-server:4000
+
 services:
-  # ── STEP 1: SAFE RUNTIME BOOTSTRAPPER (NO AUTO-DELETE) ────────────────
+
+  # ── Bootstrap (one-shot, run manually before first start) ─────────────────
+  # docker-compose --profile bootstrap run --rm counterparty-bootstrap
   counterparty-bootstrap:
-    image: alpine:latest
+    image: alpine:3.19
     container_name: counterinscriptions-bootstrap
+    profiles: [bootstrap]
     volumes:
-      - ./data:/data  # Mounts root data folder containing the zst files
+      - ./data/counterparty:/data
+    environment:
+      - NETWORK=${NETWORK:-mainnet}
     command: >
       sh -c "
-        apk add --no-cache zstd &&
-        echo '🕵️ Checking for compressed archives at root data folder...' &&
-        if [ -f '/data/counterparty.db.latest.zst' ]; then
-          echo '📦 Unzipping counterparty.db.latest.zst...' &&
-          zstd -d /data/counterparty.db.latest.zst -o /data/counterparty/counterparty.db;
+        apk add --no-cache curl tar &&
+        DB=/data/counterparty.db &&
+        if [ -f \"$$DB\" ]; then
+          echo '✓ DB exists ('$$(du -sh $$DB | cut -f1)'), skipping bootstrap.';
+          exit 0;
         fi &&
-        if [ -f '/data/state.db.latest.zst' ]; then
-          echo '📦 Unzipping state.db.latest.zst...' &&
-          zstd -d /data/state.db.latest.zst -o /data/counterparty/state.db;
-        fi &&
-        echo '✅ Safe decompression completed into data/counterparty/'"
+        echo 'Bootstrapping Counterparty DB...' &&
+        counterparty-server bootstrap ||
+        (echo 'Fallback: running counterparty-server bootstrap inside main image...' && exit 1)
+      "
 
-  # ── STEP 2: MAIN COUNTERPARTY SERVER ──────────────────────────────────
+  # ── Counterparty server (patched for all MIME types) ──────────────────────
   counterparty-server:
     build:
       context: .
       dockerfile: xcp-api-mime-Dockerfile
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     container_name: counterinscriptions-counterparty
     restart: unless-stopped
     platform: linux/amd64
     ports:
       - "4000:4000"
-    depends_on:
-      counterparty-bootstrap:
-        condition: service_completed_successfully
     volumes:
       - ./data/counterparty:/root/.local/share/counterparty
       - ./data/counterparty-cache:/root/.cache/counterparty
       - ./config/server.conf:/root/.config/counterparty/server.conf
+    environment:
+      - FORCE=${FORCE:-0}
+      - ENABLE_ALL_PROTOCOL_CHANGES=${ENABLE_ALL_PROTOCOL_CHANGES:-1}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4000/v2/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
-  # ── STEP 3: BACKEND API BRIDGE ────────────────────────────────────────
+  # ── Backend API ────────────────────────────────────────────────────────────
   backend:
     build: ./backend
     container_name: counterinscriptions-backend
@@ -49,14 +60,14 @@ services:
     ports:
       - "3001:3001"
     depends_on:
-      - counterparty-server
+      counterparty-server:
+        condition: service_healthy
     environment:
+      # Must match service name above — NOT localhost
       - COUNTERPARTY_URL=http://counterparty-server:4000
       - PORT=3001
-    volumes:
-      - ./frontend/build:/app/frontend-build:ro
 
-  # ── STEP 4: FRONTEND APPLICATION ──────────────────────────────────────
+  # ── React Frontend ─────────────────────────────────────────────────────────
   frontend:
     build: ./frontend
     container_name: counterinscriptions-frontend
@@ -66,4 +77,28 @@ services:
     depends_on:
       - backend
     environment:
-      - REACT_APP_API_URL=http://localhost:3001/api"
+      - REACT_APP_API_URL=http://localhost:3001/api
+
+  # ── Cloudflare Quick Tunnel (no account, temporary *.trycloudflare.com URL) 
+  # docker-compose --profile quicktunnel up
+  cloudflared-quick:
+    image: cloudflare/cloudflared:latest
+    container_name: counterinscriptions-tunnel-quick
+    profiles: [quicktunnel]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://frontend:80
+    depends_on:
+      - frontend
+
+  # ── Cloudflare Persistent Tunnel (set TUNNEL_TOKEN in .env)
+  # docker-compose --profile tunnel up
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: counterinscriptions-tunnel
+    profiles: [tunnel]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    depends_on:
+      - frontend
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}

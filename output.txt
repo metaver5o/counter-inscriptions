@@ -1,0 +1,94 @@
+.
+├── Dockerfile.platform
+├── Makefile
+├── README.md
+├── backend
+│   ├── Dockerfile
+│   ├── data
+│   ├── frontend-build-fallback
+│   │   └── index.html
+│   ├── index.js
+│   ├── openapi-spec.yaml
+│   ├── package-lock.json
+│   └── package.json
+├── config
+│   ├── server.conf
+│   └── server.conf.example
+├── data
+│   ├── counterparty
+│   │   ├── counterparty.db
+│   │   ├── counterparty.db-shm
+│   │   ├── counterparty.db-wal
+│   │   ├── state.db
+│   │   ├── state.db-shm
+│   │   └── state.db-wal
+│   ├── counterparty-cache
+│   │   └── log
+│   │       ├── server.access.log
+│   │       └── server.log
+│   ├── counterparty.db.latest.zst
+│   └── state.db.latest.zst
+├── docker-compose.yml
+├── entrypoint.sh
+├── frontend
+│   ├── Dockerfile
+│   ├── build
+│   │   ├── asset-manifest.json
+│   │   ├── index.html
+│   │   └── static
+│   │       └── js
+│   │           ├── main.d7d02b4c.js
+│   │           ├── main.d7d02b4c.js.LICENSE.txt
+│   │           └── main.d7d02b4c.js.map
+│   ├── nginx.conf
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── public
+│   │   └── index.html
+│   └── src
+│       ├── App.js
+│       └── index.js
+├── openapi-spec.yaml
+├── output.txt
+├── package-lock.json
+├── package.json
+├── xcp-api-mime
+│   ├── Dockerfile
+│   ├── README.md
+│   ├── ansible
+│   │   ├── README.md
+│   │   ├── deploy.yml
+│   │   ├── inventory.ini
+│   │   └── templates
+│   │       └── docker-compose.yml.j2
+│   ├── commands.md
+│   ├── config
+│   │   └── server.conf
+│   ├── docker-compose.yml
+│   ├── entrypoint.sh
+│   ├── mint.sh
+│   ├── mint_collection.sh
+│   ├── output_txs
+│   │   ├── BTCJINGLE.txt
+│   │   ├── CALLYOUOUT.txt
+│   │   ├── ENDOFTHEDAY.txt
+│   │   ├── HELLCOMEAROU.txt
+│   │   ├── KEEPTHEFAITH.txt
+│   │   ├── LOVEATTHEEND.txt
+│   │   ├── MAKEAYOUTUBE_RARE.txt
+│   │   ├── OUTINTHEWIND.txt
+│   │   ├── README.md
+│   │   ├── SAFEWITHYOU.txt
+│   │   ├── SAMESIDE.txt
+│   │   ├── SILKROAD.txt
+│   │   ├── SILKROADSONG.txt
+│   │   ├── counterparty.db
+│   │   └── log
+│   │       ├── log
+│   │       │   └── server.log
+│   │       ├── server.access.log
+│   │       └── server.log
+│   └── patch_mime.py
+└── xcp-api-mime-Dockerfile
+
+22 directories, 70 files

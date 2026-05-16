@@ -1,69 +1,48 @@
 version: '3.8'
 
-services:
-  # ── STEP 1: RUNTIME BOOTSTRAPPER (FIXED PATHS) ────────────────────────
-  counterparty-bootstrap:
-    image: alpine:latest
-    container_name: counterinscriptions-bootstrap
-    volumes:
-      - ../data:/data  # Modified path to look up one directory level to find root data
-    command: >
-      sh -c "
-        apk add --no-cache zstd &&
-        echo '🕵️ Checking for compressed archives at root data folder...' &&
-        if [ -f '/data/counterparty.db.latest.zst' ]; then
-          echo '📦 Unzipping counterparty.db.latest.zst...' &&
-          zstd -d /data/counterparty.db.latest.zst -o /data/counterparty/counterparty.db --rm;
-        fi &&
-        if [ -f '/data/state.db.latest.zst' ]; then
-          echo '📦 Unzipping state.db.latest.zst...' &&
-          zstd -d /data/state.db.latest.zst -o /data/counterparty/state.db --rm;
-        fi &&
-        echo '✅ Decompression completed into data/counterparty/'"
+# xcp-api-mime standalone compose — the original working opus minter.
+# Build context is xcp-api-mime/ so COPY paths in Dockerfile are relative to here.
 
-  # ── STEP 2: MAIN COUNTERPARTY SERVER ──────────────────────────────────
-  counterparty-server:
+services:
+  xcp-api-mime:
     build:
-      context: ..
-      dockerfile: xcp-api-mime-Dockerfile
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    container_name: counterinscriptions-counterparty
+      context: .          # <-- context is xcp-api-mime/ dir
+      dockerfile: Dockerfile
+    container_name: xcp-api-mime-service
     restart: unless-stopped
     platform: linux/amd64
     ports:
       - "4000:4000"
-    depends_on:
-      counterparty-bootstrap:
-        condition: service_completed_successfully
     volumes:
       - ../data/counterparty:/root/.local/share/counterparty
       - ../data/counterparty-cache:/root/.cache/counterparty
-      - ../config/server.conf:/root/.config/counterparty/server.conf
+      - ./config/server.conf:/root/.config/counterparty/server.conf
+    environment:
+      - FORCE=${FORCE:-0}
+      - ENABLE_ALL_PROTOCOL_CHANGES=${ENABLE_ALL_PROTOCOL_CHANGES:-1}
 
-  # ── STEP 3: BACKEND API BRIDGE ────────────────────────────────────────
-  backend:
-    build: ../backend
-    container_name: counterinscriptions-backend
+  # Lightweight mock Bitcoin RPC — lets xcp-api-mime start without a real Bitcoin node
+  bitcoin-mock:
+    image: node:18-alpine
+    container_name: xcp-api-mime-bitcoin-mock
     restart: unless-stopped
     ports:
-      - "3001:3001"
-    depends_on:
-      - counterparty-server
-    environment:
-      - COUNTERPARTY_URL=http://counterparty-server:4000
-      - PORT=3001
-    volumes:
-      - ../frontend/build:/app/frontend-build:ro
-
-  # ── STEP 4: FRONTEND APPLICATION ──────────────────────────────────────
-  frontend:
-    build: ../frontend
-    container_name: counterinscriptions-frontend
-    restart: unless-stopped
-    ports:
-      - "3000:80"
-    depends_on:
-      - backend
-    environment:
-      - REACT_APP_API_URL=http://localhost:3001/api
+      - "4100:4100"
+    command: >
+      node -e "
+        const http = require('http');
+        http.createServer((req, res) => {
+          let body = '';
+          req.on('data', c => body += c);
+          req.on('end', () => {
+            res.writeHead(200, {'Content-Type':'application/json'});
+            try {
+              const j = JSON.parse(body);
+              if (j.method === 'getblockchaininfo') return res.end(JSON.stringify({result:{blocks:933143,chain:'main'},error:null,id:j.id}));
+              if (j.method === 'getblockcount')     return res.end(JSON.stringify({result:933143,error:null,id:j.id}));
+              if (j.method === 'getblockhash')      return res.end(JSON.stringify({result:'000000000000000000008acbc751d3885d58d8393e8e2d424075191953245026',error:null,id:j.id}));
+              res.end(JSON.stringify({result:{},error:null,id:j.id}));
+            } catch(e) { res.end(JSON.stringify({error:'bad request'})); }
+          });
+        }).listen(4100, '0.0.0.0', () => console.log('Bitcoin mock RPC on :4100'));
+      "
