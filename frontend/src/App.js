@@ -1,0 +1,449 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import axios from 'axios';
+
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+const MAX_FILE_SIZE_MB = 50;
+const MAX_CHUNK_KB = 350;
+
+// ─── MIME type categories for display ────────────────────────────────────────
+const MIME_GROUPS = {
+  'Images': ['image/png','image/jpeg','image/gif','image/webp','image/svg+xml','image/bmp','image/avif'],
+  'Audio': ['audio/mpeg','audio/ogg','audio/ogg;codecs=opus','audio/wav','audio/flac','audio/aac','audio/mp4'],
+  'Video': ['video/mp4','video/webm','video/ogg','video/quicktime'],
+  'Text': ['text/plain','text/html','text/css','text/javascript','text/markdown','text/csv'],
+  'App/Data': ['application/json','application/pdf','application/wasm','application/octet-stream'],
+  '3D/Model': ['model/gltf+json','model/gltf-binary','model/stl'],
+};
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const S = {
+  root: { minHeight:'100vh', background:'#08080d', color:'#ddd', fontFamily:'system-ui,-apple-system,sans-serif', padding:'32px 16px', display:'flex', flexDirection:'column', alignItems:'center' },
+  hdr: { textAlign:'center', marginBottom:'40px' },
+  title: { fontSize:'2.6rem', fontWeight:200, background:'linear-gradient(135deg,#7c6fff 0%,#a855f7 100%)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', margin:0 },
+  sub: { fontSize:'0.85rem', color:'#555', margin:'8px 0 0', fontFamily:'monospace', letterSpacing:'0.5px' },
+  card: { background:'#101015', border:'1px solid #1e1e28', borderRadius:'16px', padding:'24px', marginBottom:'16px', maxWidth:'520px', width:'100%' },
+  sec: { fontSize:'0.7rem', textTransform:'uppercase', letterSpacing:'2px', color:'#7c6fff', marginBottom:'16px', fontWeight:600 },
+  row: { marginBottom:'16px' },
+  lbl: { display:'block', fontSize:'0.75rem', color:'#555', marginBottom:'8px' },
+  inp: { width:'100%', background:'#080810', border:'1px solid #222', borderRadius:'8px', padding:'10px 12px', color:'#ddd', fontSize:'0.9rem', outline:'none', boxSizing:'border-box' },
+  btn: { background:'linear-gradient(135deg,#7c6fff,#a855f7)', color:'#fff', border:'none', padding:'13px 20px', borderRadius:'10px', fontSize:'0.95rem', cursor:'pointer', fontWeight:500, width:'100%' },
+  btnSm: { background:'#1a1a25', color:'#888', border:'1px solid #222', padding:'8px 14px', borderRadius:'7px', fontSize:'0.8rem', cursor:'pointer' },
+  btnTab: (active) => ({ background: active ? '#7c6fff' : '#1a1a25', color: active ? '#fff' : '#888', border:'none', padding:'9px 18px', borderRadius:'8px', fontSize:'0.85rem', cursor:'pointer', fontWeight: active ? 600 : 400 }),
+  ok: { background:'#0c1a0c', border:'1px solid #1e401e', color:'#7cbc7c', borderRadius:'10px', padding:'12px', fontSize:'0.85rem', lineHeight:1.5 },
+  err: { background:'#1a0c0c', border:'1px solid #4a1e1e', color:'#f87171', borderRadius:'10px', padding:'12px', fontSize:'0.85rem', lineHeight:1.5 },
+  info: { background:'#0c0c1a', border:'1px solid #1e1e4a', color:'#888', borderRadius:'10px', padding:'12px', fontSize:'0.85rem', lineHeight:1.5 },
+  mono: { fontFamily:'monospace', fontSize:'0.78rem', wordBreak:'break-all', color:'#666' },
+  tag: { display:'inline-block', background:'#1a1a25', border:'1px solid #2a2a40', borderRadius:'5px', padding:'3px 8px', fontSize:'0.75rem', color:'#888', marginRight:'4px', marginBottom:'4px' },
+  net: (active) => ({ background: active ? '#1a2a1a' : '#1a1a25', border: `1px solid ${active ? '#2a4a2a' : '#222'}`, color: active ? '#7cbc7c' : '#888', padding:'7px 14px', borderRadius:'7px', fontSize:'0.8rem', cursor:'pointer' }),
+  progress: { background:'#1a1a25', borderRadius:'8px', height:'6px', overflow:'hidden', marginTop:'8px' },
+  progressFill: (pct) => ({ height:'100%', width:`${pct}%`, background:'linear-gradient(90deg,#7c6fff,#a855f7)', borderRadius:'8px', transition:'width 0.3s' }),
+  divider: { border:'none', borderTop:'1px solid #1e1e28', margin:'16px 0' },
+  mimeGrid: { display:'flex', flexWrap:'wrap', gap:'4px', marginTop:'8px' },
+  link: { color:'#7c6fff', textDecoration:'none' },
+  footer: { marginTop:'32px', textAlign:'center', fontSize:'0.75rem', color:'#333' },
+};
+
+// ─── Wallet helpers ───────────────────────────────────────────────────────────
+
+async function signAndBroadcastUnisat(rawTxHex) {
+  // UniSat expects a PSBT for signing; for raw tx we use pushTx/signPsbt
+  // The unsigned tx from Counterparty is a raw PSBT-like hex — use signPsbt
+  try {
+    // Try signPsbt first (newer UniSat API)
+    const signed = await window.unisat.signPsbt(rawTxHex, { autoFinalized: true });
+    const txid = await window.unisat.pushTx(signed);
+    return { txid, method: 'unisat.signPsbt' };
+  } catch {
+    // Fallback: pushTx with raw hex
+    const txid = await window.unisat.pushTx({ rawtx: rawTxHex });
+    return { txid, method: 'unisat.pushTx' };
+  }
+}
+
+async function signAndBroadcastXverse(rawTxHex) {
+  // Xverse uses signPsbt
+  const result = await window.BitcoinProvider.request('signPsbt', {
+    psbt: rawTxHex,
+    broadcast: true,
+  });
+  return { txid: result?.txid || result?.result?.txid, method: 'xverse.signPsbt' };
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+
+export default function App() {
+  const [wallet, setWallet] = useState(null);         // { address, type }
+  const [network, setNetwork] = useState('mainnet');  // mainnet | testnet
+  const [file, setFile] = useState(null);
+  const [fileInfo, setFileInfo] = useState(null);     // { name, mime, sizeKB, chunks }
+  const [asset, setAsset] = useState('');
+  const [mode, setMode] = useState('single');         // single | batch
+  const [destWallet, setDestWallet] = useState('');
+  const [batchWallets, setBatchWallets] = useState('');
+  const [feeRate, setFeeRate] = useState(2.01);
+  const [status, setStatus] = useState(null);         // { type: ok|err|info, msg }
+  const [txResults, setTxResults] = useState([]);
+  const [minting, setMinting] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [showMimes, setShowMimes] = useState(false);
+  const [health, setHealth] = useState(null);
+
+  // Health check on mount
+  useEffect(() => {
+    axios.get(`${API_URL}/health`).then(r => setHealth(r.data)).catch(() => setHealth({ status: 'degraded' }));
+  }, []);
+
+  const connectWallet = async () => {
+    setStatus({ type: 'info', msg: 'Connecting wallet...' });
+    try {
+      if (window.unisat) {
+        if (network === 'testnet') await window.unisat.switchNetwork('testnet');
+        const accounts = await window.unisat.requestAccounts();
+        setWallet({ address: accounts[0], type: 'UniSat' });
+        setStatus({ type: 'ok', msg: `UniSat connected` });
+      } else if (window.BitcoinProvider) {
+        const resp = await window.BitcoinProvider.request('getAccounts', {
+          purposes: ['ordinals', 'payment'],
+        });
+        const addr = resp.find(a => a.purpose === 'ordinals')?.address || resp[0]?.address;
+        setWallet({ address: addr, type: 'Xverse' });
+        setStatus({ type: 'ok', msg: `Xverse connected` });
+      } else {
+        alert('Please install UniSat or Xverse wallet extension.');
+      }
+    } catch (e) {
+      setStatus({ type: 'err', msg: 'Connection failed: ' + e.message });
+    }
+  };
+
+  const onFileChange = useCallback(async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (f.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+      setStatus({ type: 'err', msg: `File too large (${(f.size/1048576).toFixed(1)}MB > ${MAX_FILE_SIZE_MB}MB max)` });
+      return;
+    }
+    setFile(f);
+    // Pre-flight upload to get MIME + chunk analysis
+    try {
+      const fd = new FormData();
+      fd.append('file', f);
+      const r = await axios.post(`${API_URL}/upload`, fd);
+      setFileInfo(r.data);
+      if (r.data.needsChunking) {
+        setStatus({ type: 'info', msg: `File will be split into ${r.data.totalChunks} chunks (${r.data.totalChunks} separate Counterparty issuances). Asset names: ${asset || 'ASSET'}_1 … _${r.data.totalChunks}` });
+      } else {
+        setStatus({ type: 'ok', msg: `Ready: ${r.data.mimeType} · ${r.data.sizeKB}KB` });
+      }
+    } catch {
+      // Fallback: just use browser mime
+      const mimeBase = f.type.split(';')[0].trim();
+      const sizeKB = (f.size / 1024).toFixed(1);
+      const chunks = Math.ceil(f.size / (MAX_CHUNK_KB * 1024));
+      setFileInfo({ mimeType: mimeBase, sizeKB, totalChunks: chunks, needsChunking: chunks > 1, originalName: f.name });
+      setStatus({ type: 'ok', msg: `File loaded: ${mimeBase} · ${sizeKB}KB` });
+    }
+  }, [asset]);
+
+  const genAsset = () => {
+    const ts = Date.now().toString().slice(-6);
+    const rnd = Math.floor(Math.random() * 90000) + 10000;
+    setAsset(`A${ts}${rnd}`);
+  };
+
+  const mint = async () => {
+    if (!file || !asset) return setStatus({ type: 'err', msg: 'Select a file and set an asset name' });
+    if (!wallet) return setStatus({ type: 'err', msg: 'Connect a wallet first' });
+    if (mode === 'batch' && !batchWallets.trim()) return setStatus({ type: 'err', msg: 'Enter destination wallet addresses for batch mint' });
+
+    setMinting(true);
+    setProgress(10);
+    setTxResults([]);
+    setStatus({ type: 'info', msg: 'Building inscription payload...' });
+
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('asset', asset);
+      fd.append('walletAddress', wallet.address);
+      fd.append('sat_per_vbyte', String(feeRate));
+      fd.append('encoding', 'taproot');
+
+      if (mode === 'single') {
+        fd.append('destinationWallet', destWallet.trim() || wallet.address);
+      }
+
+      const endpoint = mode === 'batch' ? `${API_URL}/mint-batch` : `${API_URL}/mint`;
+      if (mode === 'batch') fd.append('destinationWallets', batchWallets);
+
+      setProgress(30);
+      setStatus({ type: 'info', msg: 'Sending to Counterparty server...' });
+
+      const resp = await axios.post(endpoint, fd, {
+        timeout: 300_000,
+        onUploadProgress: (e) => {
+          if (e.total) setProgress(30 + Math.round((e.loaded / e.total) * 40));
+        },
+      });
+
+      setProgress(75);
+      const data = resp.data;
+
+      if (mode === 'single') {
+        // Sign each chunk transaction
+        const signed = [];
+        for (let i = 0; i < data.transactions.length; i++) {
+          const tx = data.transactions[i];
+          const rawHex = tx.data?.result?.rawtransaction || tx.data?.rawtransaction || tx.data;
+          setStatus({ type: 'info', msg: `Signing chunk ${i + 1}/${data.transactions.length} in wallet...` });
+          setProgress(75 + Math.round((i / data.transactions.length) * 20));
+
+          let broadcastResult;
+          try {
+            if (wallet.type === 'UniSat') {
+              broadcastResult = await signAndBroadcastUnisat(rawHex);
+            } else if (wallet.type === 'Xverse') {
+              broadcastResult = await signAndBroadcastXverse(rawHex);
+            } else {
+              broadcastResult = { txid: 'manual-broadcast-required', rawTx: rawHex };
+            }
+          } catch (sigErr) {
+            broadcastResult = { error: sigErr.message, rawTx: rawHex };
+          }
+
+          signed.push({
+            asset: tx.asset,
+            chunk: tx.chunk,
+            total: tx.total_chunks,
+            ...broadcastResult,
+            rawTx: rawHex,
+          });
+        }
+
+        setTxResults(signed);
+        const ok = signed.filter(s => !s.error).length;
+        setStatus({ type: ok === signed.length ? 'ok' : 'err', msg: `${ok}/${signed.length} chunk(s) signed & broadcast${data.total_chunks > 1 ? ` (${data.total_chunks}-chunk inscription)` : ''}` });
+
+      } else {
+        // Batch results — raw txs returned, user must broadcast manually or we iterate
+        const results = data.results || [];
+        setTxResults(results);
+        setStatus({ type: 'ok', msg: `${data.succeeded}/${data.total} batch transactions composed. Sign each in your wallet.` });
+      }
+
+      setProgress(100);
+    } catch (err) {
+      const msg = err.response?.data?.error || err.response?.data || err.message;
+      setStatus({ type: 'err', msg: `Mint failed: ${typeof msg === 'object' ? JSON.stringify(msg) : msg}` });
+    } finally {
+      setMinting(false);
+    }
+  };
+
+  const shortAddr = (a) => a ? `${a.slice(0, 8)}…${a.slice(-6)}` : '';
+
+  return (
+    <div style={S.root}>
+      <header style={S.hdr}>
+        <h1 style={S.title}>Counter-Inscriptions</h1>
+        <p style={S.sub}>Mint any MIME type as Ordinals via Counterparty · Taproot</p>
+        {health && (
+          <div style={{ marginTop: '8px', fontSize: '0.75rem', color: health.status === 'ok' ? '#4a8a4a' : '#8a4a4a' }}>
+            ● XCP Server: {health.status === 'ok' ? 'Connected' : 'Unreachable'}
+            {health.version ? ` v${health.version}` : ''}
+          </div>
+        )}
+      </header>
+
+      {/* Network Toggle */}
+      <div style={{ ...S.card, padding: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: '0.8rem', color: '#555' }}>Network:</span>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button style={S.net(network === 'mainnet')} onClick={() => setNetwork('mainnet')}>⬤ Mainnet</button>
+            <button style={S.net(network === 'testnet')} onClick={() => setNetwork('testnet')}>⬤ Testnet</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Wallet Card */}
+      <div style={S.card}>
+        <div style={S.sec}>Bitcoin Wallet</div>
+        {!wallet ? (
+          <button style={S.btn} onClick={connectWallet}>Connect UniSat / Xverse</button>
+        ) : (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <span style={{ fontSize: '0.8rem', color: '#7c6fff' }}>{wallet.type}</span>
+              <span style={{ ...S.mono, marginLeft: '8px' }}>{shortAddr(wallet.address)}</span>
+            </div>
+            <button style={S.btnSm} onClick={() => setWallet(null)}>Disconnect</button>
+          </div>
+        )}
+      </div>
+
+      {/* Mint Config */}
+      {wallet && (
+        <div style={S.card}>
+          <div style={S.sec}>Mint Configuration</div>
+
+          {/* Asset Name */}
+          <div style={S.row}>
+            <label style={S.lbl}>Asset Name <span style={{ color: '#444' }}>(A… = free, named = 0.5 XCP)</span></label>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input style={{ ...S.inp, flex: 1 }} value={asset} onChange={e => setAsset(e.target.value.toUpperCase())} placeholder="A96123456789 or MYASSET" />
+              <button style={S.btnSm} onClick={genAsset}>Auto</button>
+            </div>
+          </div>
+
+          {/* Mode Tabs */}
+          <div style={{ ...S.row, display: 'flex', gap: '6px' }}>
+            <button style={S.btnTab(mode === 'single')} onClick={() => setMode('single')}>Single Mint</button>
+            <button style={S.btnTab(mode === 'batch')} onClick={() => setMode('batch')}>Batch / Airdrop</button>
+          </div>
+
+          {/* Destination Wallet (single) */}
+          {mode === 'single' && (
+            <div style={S.row}>
+              <label style={S.lbl}>Mint To (leave blank = connected wallet)</label>
+              <input style={S.inp} value={destWallet} onChange={e => setDestWallet(e.target.value)} placeholder={`bc1p… or empty to use ${shortAddr(wallet.address)}`} />
+            </div>
+          )}
+
+          {/* Batch Wallets */}
+          {mode === 'batch' && (
+            <div style={S.row}>
+              <label style={S.lbl}>Destination Wallets (comma-separated, max 350KB file for batch)</label>
+              <textarea
+                style={{ ...S.inp, minHeight: '80px', resize: 'vertical' }}
+                value={batchWallets}
+                onChange={e => setBatchWallets(e.target.value)}
+                placeholder="bc1paddr1,bc1paddr2,bc1paddr3"
+              />
+              <span style={{ fontSize: '0.75rem', color: '#444' }}>
+                {batchWallets ? batchWallets.split(',').filter(Boolean).length : 0} addresses
+              </span>
+            </div>
+          )}
+
+          {/* Fee Rate */}
+          <div style={S.row}>
+            <label style={S.lbl}>Fee Rate: {feeRate} sat/vbyte</label>
+            <input type="range" min="1" max="50" step="0.5" value={feeRate}
+              onChange={e => setFeeRate(parseFloat(e.target.value))}
+              style={{ width: '100%', accentColor: '#7c6fff' }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: '#444' }}>
+              <span>Economy</span><span>Standard</span><span>Fast</span>
+            </div>
+          </div>
+
+          <hr style={S.divider} />
+
+          {/* File Upload */}
+          <div style={S.row}>
+            <label style={S.lbl}>Upload File (any MIME type — max {MAX_FILE_SIZE_MB}MB)</label>
+            <input type="file" onChange={onFileChange} style={{ color: '#888', fontSize: '0.85rem', width: '100%' }} accept="*/*" />
+          </div>
+
+          {/* File Info */}
+          {fileInfo && (
+            <div style={{ ...S.info, marginBottom: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                <span style={S.mono}>{fileInfo.originalName}</span>
+                <span style={{ ...S.mono, color: '#7c6fff' }}>{fileInfo.mimeType}</span>
+              </div>
+              <div style={{ display: 'flex', gap: '12px', fontSize: '0.78rem', color: '#555' }}>
+                <span>{fileInfo.sizeKB} KB</span>
+                {fileInfo.needsChunking && <span style={{ color: '#a855f7' }}>⚡ {fileInfo.totalChunks} chunks</span>}
+              </div>
+            </div>
+          )}
+
+          {/* MIME Types reference */}
+          <div>
+            <button style={{ ...S.btnSm, marginBottom: '8px' }} onClick={() => setShowMimes(!showMimes)}>
+              {showMimes ? '▲' : '▼'} Supported MIME types
+            </button>
+            {showMimes && (
+              <div style={{ fontSize: '0.75rem' }}>
+                {Object.entries(MIME_GROUPS).map(([group, types]) => (
+                  <div key={group} style={{ marginBottom: '8px' }}>
+                    <div style={{ color: '#7c6fff', marginBottom: '4px', fontWeight: 600 }}>{group}</div>
+                    <div style={S.mimeGrid}>{types.map(t => <span key={t} style={S.tag}>{t}</span>)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <hr style={S.divider} />
+
+          {/* Mint Button */}
+          <button
+            style={{ ...S.btn, opacity: (!file || !asset || minting) ? 0.5 : 1, cursor: (!file || !asset || minting) ? 'not-allowed' : 'pointer' }}
+            onClick={mint}
+            disabled={!file || !asset || minting}
+          >
+            {minting ? 'Minting...' : mode === 'batch' ? `Batch Mint (${batchWallets.split(',').filter(Boolean).length} wallets)` : 'Mint Inscription'}
+          </button>
+
+          {/* Progress */}
+          {minting && (
+            <div style={S.progress}>
+              <div style={S.progressFill(progress)} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Status */}
+      {status && (
+        <div style={S.card}>
+          <div style={S.sec}>Status</div>
+          <div style={status.type === 'ok' ? S.ok : status.type === 'err' ? S.err : S.info}>
+            {status.msg}
+          </div>
+        </div>
+      )}
+
+      {/* Transaction Results */}
+      {txResults.length > 0 && (
+        <div style={S.card}>
+          <div style={S.sec}>Transactions</div>
+          {txResults.map((tx, i) => (
+            <div key={i} style={{ ...S.info, marginBottom: '8px' }}>
+              {tx.asset && <div style={{ color: '#7c6fff', fontSize: '0.8rem', marginBottom: '4px' }}>
+                {tx.asset} {tx.total > 1 ? `(chunk ${tx.chunk}/${tx.total})` : ''}
+              </div>}
+              {tx.txid && !tx.error && (
+                <div>
+                  <span style={{ ...S.mono, color: '#7cbc7c' }}>✓ TXID: </span>
+                  <a href={`https://mempool.space/tx/${tx.txid}`} target="_blank" rel="noopener noreferrer" style={S.link}>
+                    <span style={S.mono}>{tx.txid.slice(0, 20)}…</span>
+                  </a>
+                  <span style={{ fontSize: '0.7rem', color: '#444', marginLeft: '8px' }}>via {tx.method}</span>
+                </div>
+              )}
+              {tx.error && <div style={{ color: '#f87171', fontSize: '0.8rem' }}>✗ {tx.error}</div>}
+              {tx.rawTx && (
+                <details style={{ marginTop: '6px' }}>
+                  <summary style={{ fontSize: '0.75rem', color: '#444', cursor: 'pointer' }}>Raw TX</summary>
+                  <div style={{ ...S.mono, marginTop: '4px', maxHeight: '80px', overflow: 'auto', background: '#080810', padding: '6px', borderRadius: '6px' }}>
+                    {typeof tx.rawTx === 'string' ? tx.rawTx.slice(0, 200) + '…' : JSON.stringify(tx.rawTx).slice(0, 200)}
+                  </div>
+                </details>
+              )}
+              {/* Batch result fields */}
+              {tx.wallet && <div style={{ ...S.mono, fontSize: '0.75rem', color: '#555', marginTop: '4px' }}>→ {tx.wallet}</div>}
+              {tx.status === 'failed' && <div style={{ color: '#f87171', fontSize: '0.8rem' }}>✗ {tx.error}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <footer style={S.footer}>
+        Counter-Inscriptions · Counterparty + Taproot · All MIME types supported
+      </footer>
+    </div>
+  );
+}

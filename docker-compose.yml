@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  # ── STEP 1: SAFE RUNTIME BOOTSTRAPPER (NO AUTO-DELETE) ────────────────
+  counterparty-bootstrap:
+    image: alpine:latest
+    container_name: counterinscriptions-bootstrap
+    volumes:
+      - ./data:/data  # Mounts root data folder containing the zst files
+    command: >
+      sh -c "
+        apk add --no-cache zstd &&
+        echo '🕵️ Checking for compressed archives at root data folder...' &&
+        if [ -f '/data/counterparty.db.latest.zst' ]; then
+          echo '📦 Unzipping counterparty.db.latest.zst...' &&
+          zstd -d /data/counterparty.db.latest.zst -o /data/counterparty/counterparty.db;
+        fi &&
+        if [ -f '/data/state.db.latest.zst' ]; then
+          echo '📦 Unzipping state.db.latest.zst...' &&
+          zstd -d /data/state.db.latest.zst -o /data/counterparty/state.db;
+        fi &&
+        echo '✅ Safe decompression completed into data/counterparty/'"
+
+  # ── STEP 2: MAIN COUNTERPARTY SERVER ──────────────────────────────────
+  counterparty-server:
+    build:
+      context: .
+      dockerfile: xcp-api-mime-Dockerfile
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    container_name: counterinscriptions-counterparty
+    restart: unless-stopped
+    platform: linux/amd64
+    ports:
+      - "4000:4000"
+    depends_on:
+      counterparty-bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - ./data/counterparty:/root/.local/share/counterparty
+      - ./data/counterparty-cache:/root/.cache/counterparty
+      - ./config/server.conf:/root/.config/counterparty/server.conf
+
+  # ── STEP 3: BACKEND API BRIDGE ────────────────────────────────────────
+  backend:
+    build: ./backend
+    container_name: counterinscriptions-backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    depends_on:
+      - counterparty-server
+    environment:
+      - COUNTERPARTY_URL=http://counterparty-server:4000
+      - PORT=3001
+    volumes:
+      - ./frontend/build:/app/frontend-build:ro
+
+  # ── STEP 4: FRONTEND APPLICATION ──────────────────────────────────────
+  frontend:
+    build: ./frontend
+    container_name: counterinscriptions-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    environment:
+      - REACT_APP_API_URL=http://localhost:3001/api"

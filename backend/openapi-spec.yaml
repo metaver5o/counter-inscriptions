@@ -1,0 +1,419 @@
+openapi: 3.0.3
+info:
+  title: Counter-Inscriptions Minting API
+  description: |
+    ## Counter-Inscription Minting API
+
+    This API allows minting counter-inscriptions on the Counter-Inscriptions Network (Bitcoin L2 sidechain).
+
+    ## Key Concepts
+
+    - **Counter-Inscriptions**: Named digital assets minted on Bitcoin using Taproot Ordinals protocol
+    - **Minting**: Creating new named tokens that can be transferred like Bitcoin
+    - **Inscription**: Each mint creates an on-chain inscription with metadata (name, description, MIME type)
+
+    ## Rate Limits
+    The Counterparty server enforces block-level rate limits based on current network conditions. Large files may require lower saturation percentages or higher fees.
+
+    ## Block Fee Structure
+    Current typical fee: 0.00125 XCP (~$0.40 USD depending on BTC price)
+
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:3001/api
+    description: Local development server
+
+tags:
+  - name: Minting
+    description: Operations for minting new counter-inscriptions
+
+paths:
+  /mint:
+    post:
+      summary: Mint a new counter-inscription
+      tags: [Minting]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - asset
+                - description
+                - mime_type
+                - walletAddress
+                - encoding
+              properties:
+                asset:
+                  type: string
+                  example: "digital-gold"
+                  description: Name of the minted asset (must be unique)
+                quantity:
+                  type: string
+                  example: "1"
+                  description: Number of copies to mint (must be 1 for non-divisible assets)
+                divisible:
+                  type: string
+                  example: "false"
+                  description: Whether the asset is divisible (always false for counter-inscriptions)
+                description:
+                  type: string
+                  example: "Premium golden token representing digital wealth"
+                  description: UTF-8 encoded description of the asset
+                mime_type:
+                  type: string
+                  example: "image/png"
+                  description: MIME type of the counter-inscription content
+                encoding:
+                  type: string
+                  enum: [taproot, bech32]
+                  default: taproot
+                  example: "taproot"
+                  description: BIP84 wallet encoding (Taproot is recommended)
+                sat_per_vbyte:
+                  type: number
+                  example: 2.01
+                  description: Fee rate in sat/vbyte for transaction
+                walletAddress:
+                  type: string
+                  example: "bcrt1...xyz"
+                  description: Bitcoin wallet address to receive the mint
+                inscription:
+                  type: string
+                  example: "true"
+                  description: Whether this is an ordinal inscription (always true)
+
+      responses:
+        '200':
+          description: Successful mint operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  raw_tx:
+                    type: string
+                    example: "01000000..."
+                    description: Hex-encoded unsigned transaction
+                  asset:
+                    type: string
+                    example: "digital-gold"
+                  wallet:
+                    type: string
+                    example: "bcrt1...xyz"
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '402':
+          description: Insufficient funds for fees and registration cost
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: string
+        '503':
+          description: Counterparty server unreachable
+
+  /mint-any-wallet:
+    post:
+      summary: Mint to any specified wallet address (not just connected)
+      description: |
+        Mints a counter-inscription to a specific wallet address.
+        The connected wallet pays fees, but the asset goes to the specified destination.
+      tags: [Minting]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - asset
+                - description
+                - mime_type
+              properties:
+                asset:
+                  type: string
+                  example: "golden-token"
+                quantity:
+                  type: string
+                  example: "1"
+                divisible:
+                  type: string
+                  example: "false"
+                description:
+                  type: string
+                  example: "Exclusive golden token for premium users"
+                mime_type:
+                  type: string
+                  example: "image/png"
+                encoding:
+                  type: string
+                  enum: [taproot, bech32]
+                  default: taproot
+                  example: "taproot"
+                sat_per_vbyte:
+                  type: number
+                  example: 2.01
+                walletAddress:
+                  type: string
+                  example: "bcrt1...xyz"
+
+      responses:
+        '200':
+          description: Successful mint operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  raw_tx:
+                    type: string
+                    example: "01000000..."
+                  asset:
+                    type: string
+                    example: "golden-token"
+                  wallet:
+                    type: string
+                    example: "bcrt1...xyz"
+
+  /mint-collection:
+    post:
+      summary: Batch mint collection to multiple wallets
+      description: |
+        Mints the same counter-inscription to a batch of wallets.
+        Each wallet receives one copy with their own unique transaction.
+      tags: [Minting]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - asset
+                - description
+                - mime_type
+                - walletAddresses
+              properties:
+                asset:
+                  type: string
+                  example: "digital-gold"
+                quantity_per_wallet:
+                  type: string
+                  example: "1"
+                divisible:
+                  type: string
+                  example: "false"
+                description:
+                  type: string
+                  example: "Premium golden token collection"
+                mime_type:
+                  type: string
+                  example: "image/png"
+                encoding:
+                  type: string
+                  enum: [taproot, bech32]
+                  default: taproot
+                  example: "taproot"
+                sat_per_vbyte:
+                  type: number
+                  example: 2.01
+                walletAddresses:
+                  type: string
+                  description: Comma-separated list of wallet addresses
+                  example: "bcrt1...aaa,bcrt1...bbb,bcrt1...ccc"
+
+      responses:
+        '200':
+          description: Batch mint operation results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  total:
+                    type: integer
+                    example: 3
+                  succeeded:
+                    type: integer
+                    example: 3
+                  transactions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        wallet:
+                          type: string
+                        raw_tx:
+                          type: string
+                        status:
+                          type: string
+                          enum: [success, failed]
+                        error:
+                          type: string
+                  message:
+                    type: string
+                    example: "3/3 mint operations completed"
+        '400':
+          description: Invalid wallet addresses provided
+
+  /balance/{address}:
+    get:
+      summary: Get balance for a wallet address
+      description: Returns all asset balances for the specified Bitcoin address
+      tags: [Wallet]
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "bcrt1...xyz"
+          description: Bitcoin wallet address
+      responses:
+        '200':
+          description: Balance information
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: object
+                  properties:
+                    value:
+                      type: string
+                    asset:
+                      type: string
+        '500':
+          description: Failed to fetch balance
+
+  /generate-asset-name:
+    post:
+      summary: Generate a free asset name automatically
+      description: Generates a unique name for your counter-inscription using timestamp and random suffix
+      tags: [Minting]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prefix:
+                  type: string
+                  example: "gold"
+                  description: Optional prefix for the generated name
+      responses:
+        '200':
+          description: Generated asset name
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  asset:
+                    type: string
+                    example: "gold1705329123847"
+
+  /health:
+    get:
+      summary: Health check endpoint
+      description: Verifies the Counterparty server is reachable
+      tags: [System]
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, offline, error]
+                    example: ok
+                  counterparty_url:
+                    type: string
+                    example: http://localhost:4000
+
+components:
+  schemas:
+    MintRequest:
+      type: object
+      required:
+        - asset
+        - description
+        - mime_type
+        - walletAddress
+      properties:
+        asset:
+          type: string
+        quantity:
+          type: string
+          default: "1"
+        divisible:
+          type: string
+          default: "false"
+        description:
+          type: string
+        mime_type:
+          type: string
+        encoding:
+          type: string
+          enum: [taproot, bech32]
+          default: taproot
+        sat_per_vbyte:
+          type: number
+          default: 2.01
+        walletAddress:
+          type: string
+    BatchMintRequest:
+      type: object
+      required:
+        - asset
+        - description
+        - mime_type
+        - walletAddresses
+      properties:
+        asset:
+          type: string
+        quantity_per_wallet:
+          type: string
+          default: "1"
+        divisible:
+          type: string
+          default: "false"
+        description:
+          type: string
+        mime_type:
+          type: string
+        encoding:
+          type: string
+          enum: [taproot, bech32]
+          default: taproot
+        sat_per_vbyte:
+          type: number
+          default: 2.01
+        walletAddresses:
+          type: string
