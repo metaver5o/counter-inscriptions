@@ -1,0 +1,14 @@
+FROM --platform=linux/amd64 counterparty/counterparty:latest
+
+# Copy patched python files and apply them in build stage
+COPY config/server.conf /root/.config/counterparty/server.conf
+COPY patch_mime.py /tmp/patch_mime.py
+RUN python3 /tmp/patch_mime.py && rm /tmp/patch_mime.py
+
+# Custom entrypoint that reads BITCOIN_RPC_* env vars and maps to CLI flags
+COPY entrypoint.sh /entrypoint-custom.sh
+RUN chmod +x /entrypoint-custom.sh
+
+EXPOSE 4000
+
+ENTRYPOINT ["/entrypoint-custom.sh"]

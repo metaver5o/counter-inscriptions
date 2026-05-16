@@ -1,0 +1,12 @@
+# Runtime data
+data/
+
+# Claude Code local config
+.claude/
+
+# macOS
+.DS_Store
+# Senstive files
+.env
+.env.template
+tomint/
