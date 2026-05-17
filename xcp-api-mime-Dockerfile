@@ -2,12 +2,12 @@ FROM --platform=linux/amd64 counterparty/counterparty:latest
 
 USER root
 
-# Build context is repo root — so paths are relative to root
+# Build context is repo root — paths relative to root
 COPY config/server.conf /root/.config/counterparty/server.conf
-COPY xcp-api-mime/patch_mime.py /tmp/patch_mime.py
+COPY patch_mime.py /tmp/patch_mime.py
 RUN python3 /tmp/patch_mime.py && rm /tmp/patch_mime.py
 
-COPY xcp-api-mime/entrypoint.sh /entrypoint-custom.sh
+COPY entrypoint.sh /entrypoint-custom.sh
 RUN chmod +x /entrypoint-custom.sh
 
 EXPOSE 4000
