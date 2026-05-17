@@ -1,7 +1,7 @@
 #!/bin/sh
 # Counterparty entrypoint — api-only mode, no Bitcoin Core needed for inscription composing
 
-ARGS="start --api-host=0.0.0.0 --api-port=4000 --rpc-host=0.0.0.0 --api-only"
+ARGS="start --api-host=0.0.0.0 --api-port=4000 --rpc-host=0.0.0.0 "
 
 [ -n "$BACKEND_CONNECT" ]         && ARGS="$ARGS --backend-connect=$BACKEND_CONNECT"
 [ -n "$BACKEND_PORT" ]            && ARGS="$ARGS --backend-port=$BACKEND_PORT"

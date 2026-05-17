@@ -123,11 +123,23 @@ app.get('/swagger-ui.html', (req, res) => {
 <style>body{margin:0;padding:20px;background:#0a0a0f}
 .swagger-ui{max-width:1400px;margin:0 auto;background:#121216;padding:20px;border-radius:8px}</style>
 </head><body><div id="swagger-ui"></div>
+<script src="https://unpkg.com/swagger-ui-dist@5.17.4/swagger-ui-bundle.js"></script>
 <script src="https://unpkg.com/swagger-ui-dist@5.17.4/swagger-ui-standalone-preset.js"></script>
-<script>window.onload=()=>fetch('/openapi-spec.json').then(r=>r.json()).then(spec=>SwaggerUIBundle({
-spec,dom_id:'#swagger-ui',deepLinking:true,validatorUrl:null,
-presets:[SwaggerUIBundle.presets.apis,SwaggerUIStandalonePreset],
-plugins:[SwaggerUIBundle.plugins.DownloadUrl],layout:'StandaloneLayout'}))</script>
+<script>
+window.onload = function() {
+  fetch('/openapi-spec.json').then(function(r) { return r.json(); }).then(function(spec) {
+    SwaggerUIBundle({
+      spec: spec,
+      dom_id: '#swagger-ui',
+      deepLinking: true,
+      validatorUrl: null,
+      presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+      plugins: [SwaggerUIBundle.plugins.DownloadUrl],
+      layout: 'StandaloneLayout'
+    });
+  });
+};
+</script>
 </body></html>`);
 });
 
@@ -310,12 +322,13 @@ app.get('/api/health', async (req, res) => {
 app.get('/api/mime-types', (req, res) => {
   return res.json({
     supported: {
-      image: ['image/png','image/jpeg','image/gif','image/webp','image/svg+xml','image/bmp','image/tiff','image/avif','image/heic'],
-      audio: ['audio/mpeg','audio/ogg','audio/ogg;codecs=opus','audio/wav','audio/flac','audio/aac','audio/webm','audio/mp4','audio/x-m4a'],
-      video: ['video/mp4','video/webm','video/ogg','video/avi','video/quicktime','video/x-matroska'],
-      text: ['text/plain','text/html','text/css','text/javascript','text/csv','text/xml','text/markdown'],
-      application: ['application/json','application/pdf','application/zip','application/wasm','application/octet-stream','application/xml'],
-      model: ['model/gltf+json','model/gltf-binary','model/stl'],
+      image: ['image/png','image/jpeg','image/gif','image/webp','image/svg+xml','image/bmp','image/avif','image/tiff','image/heic','image/jxl','image/x-icon'],
+      audio: ['audio/mpeg','audio/ogg','audio/ogg;codecs=opus','audio/wav','audio/flac','audio/aac','audio/mp4','audio/webm','audio/midi','audio/x-aiff','audio/x-m4a'],
+      video: ['video/mp4','video/webm','video/ogg','video/quicktime','video/x-matroska','video/x-msvideo','video/mpeg','video/3gpp','video/x-flv'],
+      text: ['text/plain','text/html','text/css','text/javascript','text/markdown','text/csv','text/xml','text/yaml','text/x-python','text/x-rust','text/x-go','text/x-solidity','text/x-sh','text/x-lua','text/x-swift','text/x-kotlin','text/x-java','text/x-ruby','text/x-php','text/x-toml'],
+      application: ['application/json','application/pdf','application/wasm','application/octet-stream','application/epub+zip','application/x-sqlite3','application/zip','application/gzip','application/x-7z-compressed','application/geo+json','application/ld+json','application/pgp-signature','application/vnd.ms-excel','application/msword','application/x-chess-pgn','application/vnd.google-earth.kml+xml','application/x-shockwave-flash','chemical/x-mdl-molfile'],
+      model: ['model/gltf+json','model/gltf-binary','model/stl','model/obj','model/vrml','model/vnd.usdz+zip','application/x-blender'],
+      font: ['font/ttf','font/otf','font/woff','font/woff2'],
     },
     max_chunk_kb: MAX_CHUNK_BYTES / 1024,
     max_file_mb: MAX_FILE_SIZE_MB,

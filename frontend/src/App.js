@@ -7,12 +7,61 @@ const MAX_CHUNK_KB = 350;
 
 // ─── MIME type categories for display ────────────────────────────────────────
 const MIME_GROUPS = {
-  'Images': ['image/png','image/jpeg','image/gif','image/webp','image/svg+xml','image/bmp','image/avif'],
-  'Audio': ['audio/mpeg','audio/ogg','audio/ogg;codecs=opus','audio/wav','audio/flac','audio/aac','audio/mp4'],
-  'Video': ['video/mp4','video/webm','video/ogg','video/quicktime'],
-  'Text': ['text/plain','text/html','text/css','text/javascript','text/markdown','text/csv'],
-  'App/Data': ['application/json','application/pdf','application/wasm','application/octet-stream'],
-  '3D/Model': ['model/gltf+json','model/gltf-binary','model/stl'],
+  'Images': [
+    { type: 'image/png' }, { type: 'image/jpeg' }, { type: 'image/gif' },
+    { type: 'image/webp' }, { type: 'image/svg+xml' }, { type: 'image/bmp' },
+    { type: 'image/avif' }, { type: 'image/tiff', new: true },
+    { type: 'image/heic', new: true }, { type: 'image/jxl', new: true },
+    { type: 'image/x-icon', new: true },
+  ],
+  'Audio': [
+    { type: 'audio/mpeg' }, { type: 'audio/ogg' }, { type: 'audio/ogg;codecs=opus' },
+    { type: 'audio/wav' }, { type: 'audio/flac' }, { type: 'audio/aac' },
+    { type: 'audio/mp4' }, { type: 'audio/webm', new: true },
+    { type: 'audio/midi', new: true }, { type: 'audio/x-aiff', new: true },
+    { type: 'audio/x-m4a', new: true },
+  ],
+  'Video': [
+    { type: 'video/mp4' }, { type: 'video/webm' }, { type: 'video/ogg' },
+    { type: 'video/quicktime' }, { type: 'video/x-matroska', new: true },
+    { type: 'video/x-msvideo', new: true }, { type: 'video/mpeg', new: true },
+    { type: 'video/3gpp', new: true }, { type: 'video/x-flv', new: true },
+  ],
+  'Text / Code': [
+    { type: 'text/plain' }, { type: 'text/html' }, { type: 'text/css' },
+    { type: 'text/javascript' }, { type: 'text/markdown' }, { type: 'text/csv' },
+    { type: 'text/xml', new: true }, { type: 'text/yaml', new: true },
+    { type: 'text/x-python', new: true }, { type: 'text/x-rust', new: true },
+    { type: 'text/x-go', new: true }, { type: 'text/x-solidity', new: true },
+    { type: 'text/x-sh', new: true }, { type: 'text/x-lua', new: true },
+    { type: 'text/x-swift', new: true }, { type: 'text/x-kotlin', new: true },
+    { type: 'text/x-java', new: true }, { type: 'text/x-ruby', new: true },
+    { type: 'text/x-php', new: true }, { type: 'text/x-toml', new: true },
+  ],
+  'App / Data': [
+    { type: 'application/json' }, { type: 'application/pdf' },
+    { type: 'application/wasm' }, { type: 'application/octet-stream' },
+    { type: 'application/epub+zip', new: true }, { type: 'application/x-sqlite3', new: true },
+    { type: 'application/zip', new: true }, { type: 'application/gzip', new: true },
+    { type: 'application/x-7z-compressed', new: true },
+    { type: 'application/geo+json', new: true }, { type: 'application/ld+json', new: true },
+    { type: 'application/pgp-signature', new: true },
+    { type: 'application/vnd.ms-excel', new: true },
+    { type: 'application/msword', new: true },
+    { type: 'application/x-chess-pgn', new: true },
+    { type: 'application/vnd.google-earth.kml+xml', new: true },
+    { type: 'application/x-shockwave-flash', new: true },
+    { type: 'chemical/x-mdl-molfile', new: true },
+  ],
+  '3D / Model': [
+    { type: 'model/gltf+json' }, { type: 'model/gltf-binary' }, { type: 'model/stl' },
+    { type: 'model/obj', new: true }, { type: 'model/vrml', new: true },
+    { type: 'model/vnd.usdz+zip', new: true }, { type: 'application/x-blender', new: true },
+  ],
+  'Fonts': [
+    { type: 'font/ttf', new: true }, { type: 'font/otf', new: true },
+    { type: 'font/woff', new: true }, { type: 'font/woff2', new: true },
+  ],
 };
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -146,9 +195,13 @@ export default function App() {
   }, [asset]);
 
   const genAsset = () => {
-    const ts = Date.now().toString().slice(-6);
-    const rnd = Math.floor(Math.random() * 90000) + 10000;
-    setAsset(`A${ts}${rnd}`);
+    // Counterparty numeric assets must be A + 18-19 digit number
+    // Valid range: A1000000000000000000 to A9999999999999999999 (19 digits)
+    const hi = BigInt('9999999999999999999');
+    const lo = BigInt('1000000000000000000');
+    const range = hi - lo;
+    const rand = lo + BigInt(Math.floor(Math.random() * Number(range)));
+    setAsset(`A${rand.toString()}`);
   };
 
   const mint = async () => {
@@ -369,7 +422,18 @@ export default function App() {
                 {Object.entries(MIME_GROUPS).map(([group, types]) => (
                   <div key={group} style={{ marginBottom: '8px' }}>
                     <div style={{ color: '#7c6fff', marginBottom: '4px', fontWeight: 600 }}>{group}</div>
-                    <div style={S.mimeGrid}>{types.map(t => <span key={t} style={S.tag}>{t}</span>)}</div>
+                    <div style={S.mimeGrid}>
+                      {types.map(t => (
+                        <span key={t.type} style={{
+                          ...S.tag,
+                          borderColor: t.new ? '#a855f7' : '#2a2a40',
+                          color: t.new ? '#c084fc' : '#888',
+                        }}>
+                          {t.type}
+                          {t.new && <span style={{ marginLeft: '4px', fontSize: '0.65rem', color: '#a855f7', fontWeight: 700 }}>NEW</span>}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
