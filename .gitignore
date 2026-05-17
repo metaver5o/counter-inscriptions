@@ -42,3 +42,6 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+
+# Past mint transaction outputs
+xcp-api-mime/output_txs/
