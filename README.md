@@ -8,34 +8,70 @@ Taproot inscriptions · UniSat + Xverse wallet support · Batch / airdrop mintin
 ## Architecture
 
 ```
-┌─────────────────────────────────┐
-│  Browser (port 3000)            │
-│  React frontend                 │
-│  - UniSat / Xverse wallet       │
-│  - Single + Batch mint UI       │
-│  - Testnet / Mainnet toggle     │
-└──────────────┬──────────────────┘
-               │ HTTP
-┌──────────────▼──────────────────┐
-│  Backend API (port 3001)        │
-│  Node.js / Express              │
-│  - /api/mint         (single)   │
-│  - /api/mint-batch   (airdrop)  │
-│  - /api/upload       (preflight)│
-│  - /api/balance/:addr           │
-│  - /api/mime-types              │
-│  - /api/health                  │
-│  Auto-chunks files >350KB       │
-└──────────────┬──────────────────┘
-               │ HTTP (service DNS: counterparty-server)
-┌──────────────▼──────────────────┐
-│  Counterparty API (port 4000)   │
-│  counterparty-core (patched)    │
-│  patch_mime.py applied:         │
-│  - All 100+ MIME types          │
-│  - 50MB body limit              │
-│  - MIME param stripping         │
-└─────────────────────────────────┘
+┌─────────────────────────────────────┐
+│  Browser (port 3000)                │
+│  React SPA — nginx-served           │
+│  - UniSat / Xverse wallet connect   │
+│  - Single mint + Batch/airdrop UI   │
+│  - Testnet / Mainnet toggle         │
+│  - File pre-flight + chunk preview  │
+│  - Progress bar + TXID results      │
+└──────────────┬──────────────────────┘
+               │ /api/* proxied by nginx → backend:3001
+┌──────────────▼──────────────────────┐
+│  Backend API (port 3001)            │
+│  Node.js / Express                  │
+│  - POST /api/mint        (single)   │
+│  - POST /api/mint-batch  (airdrop)  │
+│  - POST /api/upload      (preflight)│
+│  - GET  /api/balance/:addr          │
+│  - GET  /api/mime-types             │
+│  - GET  /api/health                 │
+│  - GET  /swagger-ui.html            │
+│  Max file: 50MB                     │
+│  Chunk size: 350KB binary           │
+└──────────────┬──────────────────────┘
+               │ HTTP — service DNS: counterparty-server:4000
+┌──────────────▼──────────────────────┐
+│  Counterparty API (port 4000)       │
+│  counterparty-core + patch_mime.py  │
+│  - 100+ MIME types registered       │
+│  - 50MB body limit                  │
+│  - API-only mode (no Bitcoin node)  │
+└─────────────────────────────────────┘
+```
+
+The nginx config inside the frontend container proxies all `/api/` traffic to `backend:3001`, so the browser only ever talks to one origin (port 3000).
+
+---
+
+## Repository Structure
+
+```
+.
+├── backend/
+│   ├── Dockerfile
+│   ├── index.js                  # Express API server
+│   ├── openapi-spec.yaml         # OpenAPI 3.0 spec (served at /swagger-ui.html)
+│   ├── frontend-build-fallback/
+│   │   └── index.html            # Minimal fallback if React build is missing
+│   └── package.json
+├── config/
+│   ├── server.conf               # Active Counterparty config
+│   └── server.conf.example       # Template — copy and edit
+├── data/                         # Gitignored runtime data
+│   ├── counterparty/             # counterparty.db, state.db
+│   └── counterparty-cache/
+├── frontend/
+│   ├── Dockerfile
+│   ├── nginx.conf                # Serves SPA + proxies /api/ to backend
+│   ├── src/App.js                # Full React UI
+│   └── package.json
+├── patch_mime.py                 # Patches counterparty-core MIME registry at build time
+├── entrypoint.sh                 # Counterparty startup script (api-only mode)
+├── xcp-api-mime-Dockerfile       # Builds the patched Counterparty image
+├── docker-compose.yml
+└── Makefile
 ```
 
 ---
@@ -47,33 +83,41 @@ Taproot inscriptions · UniSat + Xverse wallet support · Batch / airdrop mintin
 ```bash
 git clone <repo>
 cd counterinscriptions
-cp .env.example .env   # or edit .env directly
+cp config/server.conf.example config/server.conf
+# Edit config/server.conf as needed
 ```
 
 ### 2. Start all services
 
 ```bash
-docker-compose up --build
+make          # runs docker compose up --build
+# or directly:
+docker compose up --build
 ```
 
-- Frontend: http://localhost:3000  
-- Backend API: http://localhost:3001  
-- Counterparty: http://localhost:4000/v2/
+| Service | URL |
+|---------|-----|
+| Frontend | http://localhost:3000 |
+| Backend API + Swagger | http://localhost:3001/swagger-ui.html |
+| Counterparty API | http://localhost:4000/v2/ |
 
-### 3. Expose publicly (for testing with mobile wallets)
+### 3. Expose publicly (for mobile wallet testing)
 
-**Quick tunnel (no account needed — temporary URL):**
 ```bash
-docker-compose --profile quicktunnel up
-# Look for "trycloudflare.com" URL in cloudflared logs
-docker logs counterinscriptions-quick-tunnel
+docker compose --profile tunnel up
+# URL appears in the container logs:
+docker logs counterinscriptions-tunnel
 ```
 
-**Persistent tunnel (Cloudflare account):**
+---
+
+## Makefile
+
 ```bash
-# 1. Get token at https://dash.cloudflare.com/tunnels
-# 2. Set in .env: TUNNEL_TOKEN=your_token_here
-docker-compose --profile tunnel up
+make          # docker compose up --build
+make down     # docker compose down
+make clean    # delete counterparty.db and state.db from data/
+make reset    # down + clean + up
 ```
 
 ---
@@ -82,202 +126,97 @@ docker-compose --profile tunnel up
 
 ### Single Mint (with auto-chunking)
 
-Files larger than **350KB** are automatically split into multiple Counterparty
-issuances named `ASSET_1`, `ASSET_2`, etc. The frontend handles signing each chunk.
+Files larger than **350KB binary** are automatically split into multiple Counterparty
+issuances. The frontend signs each chunk sequentially.
 
 ```
-File → hex → chunk(350KB) → issuance per chunk → sign in wallet → broadcast
+File → detect MIME → chunk(350KB) → per-chunk POST /api/mint
+     → composeIssuance() → sign PSBT in wallet → broadcast
 ```
+
+Chunks are named `ASSET_1`, `ASSET_2`, etc. Reassembly is handled at the application/viewer layer.
 
 ### Batch Mint (airdrop)
 
-One file → many destination wallets. Limited to **350KB** (single chunk).
-For larger files, use single mint per wallet.
+One file minted to many destination wallets. File must be **≤350KB** (single chunk).
+Use single mint with chunking for larger files.
 
 ```
-File → hex → loop(wallets) → issuance per wallet → unsigned txs returned
+File → hex → loop(wallets) → POST /api/mint-batch
+     → unsigned txs returned → sign + broadcast per wallet
 ```
+
+---
+
+## API Reference
+
+Full interactive docs at `http://localhost:3001/swagger-ui.html`.
+
+### `POST /api/mint`
+Single file → one wallet. Accepts `multipart/form-data`.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `file` | yes | File to inscribe (max 50MB) |
+| `asset` | yes | Asset name e.g. `MYTOKEN` or `A17...` |
+| `walletAddress` | yes | Connected wallet (fee payer) |
+| `destinationWallet` | no | Recipient address (defaults to `walletAddress`) |
+| `mime_type` | no | Override auto-detected MIME type |
+| `sat_per_vbyte` | no | Fee rate (default: `2.01`) |
+| `encoding` | no | `taproot` (default) |
+
+Returns chunk-by-chunk transaction data for wallet signing.
+
+### `POST /api/mint-batch`
+One file → many wallets. Same fields as `/api/mint` plus:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `destinationWallets` | yes | Comma-separated wallet addresses |
+
+File must be ≤350KB. Returns per-wallet success/failure results.
+
+### `POST /api/upload`
+Pre-flight analysis — no minting. Returns MIME type, size, chunk count, and hex preview. Use this before minting to confirm chunk count.
+
+### `GET /api/balance/:address`
+Proxies to Counterparty `/v2/addresses/:address/balances`.
+
+### `GET /api/health`
+Returns backend status and whether Counterparty is reachable.
+
+### `GET /api/mime-types`
+Full list of supported MIME types, max chunk size, and max file size.
+
+---
+
+## Wallet Signing
+
+### UniSat
+Uses `signPsbt` on the unsigned PSBT returned by Counterparty, then `pushTx` to broadcast.
+
+### Xverse
+Uses `signPsbt` with `broadcast: true` — Xverse handles broadcasting internally.
+
+Both wallets support Testnet/Mainnet toggle from the UI. Switching networks in the UI also switches the active UniSat network.
 
 ---
 
 ## Supported MIME Types
 
-All common types are registered. See `GET /api/mime-types` for the full list.
+See `GET /api/mime-types` for the live list. Summary:
 
-### Images
-
-| MIME Type | Notes |
-|-----------|-------|
-| `image/png` | |
-| `image/jpeg` | |
-| `image/gif` | |
-| `image/webp` | |
-| `image/svg+xml` | |
-| `image/bmp` | |
-| `image/avif` | |
-| `image/tiff` | **NEW** |
-| `image/heic` | **NEW** |
-| `image/jxl` | JPEG XL — **NEW** |
-| `image/x-icon` | **NEW** |
-
-### Audio
-
-| MIME Type | Notes |
-|-----------|-------|
-| `audio/mpeg` | MP3 |
-| `audio/ogg` | |
-| `audio/ogg;codecs=opus` | |
-| `audio/wav` | |
-| `audio/flac` | |
-| `audio/aac` | |
-| `audio/mp4` | |
-| `audio/webm` | **NEW** |
-| `audio/midi` | **NEW** |
-| `audio/x-aiff` | **NEW** |
-| `audio/x-m4a` | **NEW** |
-
-### Video
-
-| MIME Type | Notes |
-|-----------|-------|
-| `video/mp4` | |
-| `video/webm` | |
-| `video/ogg` | |
-| `video/quicktime` | MOV |
-| `video/x-matroska` | MKV — **NEW** |
-| `video/x-msvideo` | AVI — **NEW** |
-| `video/mpeg` | **NEW** |
-| `video/3gpp` | **NEW** |
-| `video/x-flv` | **NEW** |
-
-### Text / Code
-
-| MIME Type | Notes |
-|-----------|-------|
-| `text/plain` | |
-| `text/html` | |
-| `text/css` | |
-| `text/javascript` | |
-| `text/markdown` | |
-| `text/csv` | |
-| `text/xml` | **NEW** |
-| `text/yaml` | **NEW** |
-| `text/x-python` | **NEW** |
-| `text/x-rust` | **NEW** |
-| `text/x-go` | **NEW** |
-| `text/x-solidity` | **NEW** |
-| `text/x-sh` | Shell scripts — **NEW** |
-| `text/x-lua` | **NEW** |
-| `text/x-swift` | **NEW** |
-| `text/x-kotlin` | **NEW** |
-| `text/x-java` | **NEW** |
-| `text/x-ruby` | **NEW** |
-| `text/x-php` | **NEW** |
-| `text/x-toml` | **NEW** |
-
-### App / Data
-
-| MIME Type | Notes |
-|-----------|-------|
-| `application/json` | |
-| `application/pdf` | |
-| `application/wasm` | |
-| `application/octet-stream` | Generic binary |
-| `application/epub+zip` | **NEW** |
-| `application/x-sqlite3` | **NEW** |
-| `application/zip` | **NEW** |
-| `application/gzip` | **NEW** |
-| `application/x-7z-compressed` | **NEW** |
-| `application/geo+json` | GeoJSON — **NEW** |
-| `application/ld+json` | JSON-LD — **NEW** |
-| `application/pgp-signature` | **NEW** |
-| `application/vnd.ms-excel` | XLS — **NEW** |
-| `application/msword` | DOC — **NEW** |
-| `application/x-chess-pgn` | Chess notation — **NEW** |
-| `application/vnd.google-earth.kml+xml` | KML — **NEW** |
-| `application/x-shockwave-flash` | SWF — **NEW** |
-| `chemical/x-mdl-molfile` | Molecular data — **NEW** |
-
-### 3D / Model
-
-| MIME Type | Notes |
-|-----------|-------|
-| `model/gltf+json` | |
-| `model/gltf-binary` | GLB |
-| `model/stl` | |
-| `model/obj` | **NEW** |
-| `model/vrml` | **NEW** |
-| `model/vnd.usdz+zip` | USDZ (Apple AR) — **NEW** |
-| `application/x-blender` | .blend files — **NEW** |
-
-### Fonts
-
-| MIME Type | Notes |
-|-----------|-------|
-| `font/ttf` | **NEW** |
-| `font/otf` | **NEW** |
-| `font/woff` | **NEW** |
-| `font/woff2` | **NEW** |
-
----
-
-## Features
-
-### Backend (`backend/index.js`)
-- Correct hex-encoded form body construction for `mint-collection` and `mint-any-wallet`
-- Proper Docker service DNS resolution via `counterparty-server:4000`
-- Auto-chunking: files >350KB are split into multiple issuances automatically
-- `/api/upload` pre-flight endpoint for MIME detection and chunk count analysis
-- `/api/mime-types` endpoint listing all supported types
-- `destinationWallet` routing — mints go to the intended recipient address
-- Server-side MIME detection via the `mime-types` npm package
-
-### Frontend (`frontend/src/App.js`)
-- Correct destination wallet used when minting (not always the connected address)
-- Proper unsigned tx signing via `signPsbt` + `pushTx` for UniSat
-- Xverse signing via `signPsbt` with `broadcast: true`
-- Testnet/Mainnet network toggle (switches UniSat network automatically)
-- File pre-flight showing chunk count before minting begins
-- Progress bar during multi-chunk mint
-- Collapsible MIME type reference grid
-- Per-chunk transaction results with TXID links to mempool.space
-
-### Docker (`docker-compose.yml`)
-- Correct inter-container networking via `http://counterparty-server:4000`
-- Cloudflare tunnel service (two profiles: `tunnel` for persistent, `quicktunnel` for temporary)
-- Health check on counterparty-server before backend starts
-
-### MIME Patch (`xcp-api-mime/patch_mime.py`)
-- **100+ MIME types** registered across images, audio, video, text, application, fonts, and 3D models
-- Extended image support: `image/tiff`, `image/heic`, `image/jxl`, `image/x-icon`
-- Extended audio: `audio/webm`, `audio/midi`, `audio/x-aiff`, `audio/x-m4a`
-- Extended video: `video/x-matroska`, `video/x-msvideo`, `video/mpeg`, `video/3gpp`, `video/x-flv`
-- Source code types: `text/x-python`, `text/x-rust`, `text/x-go`, `text/x-solidity`, `text/x-lua`, `text/x-swift`, `text/x-kotlin`, `text/x-java`, `text/x-ruby`, `text/x-php`, `text/x-toml`, `text/x-sh`
-- Data/archive formats: `application/epub+zip`, `application/x-sqlite3`, `application/zip`, `application/gzip`, `application/x-7z-compressed`, `application/geo+json`, `application/ld+json`
-- Document/misc: `application/pgp-signature`, `application/vnd.ms-excel`, `application/msword`, `application/x-chess-pgn`, `application/vnd.google-earth.kml+xml`, `application/x-shockwave-flash`, `chemical/x-mdl-molfile`
-- 3D formats: `model/obj`, `model/vrml`, `model/vnd.usdz+zip`, `application/x-blender`
-- Font formats: `font/ttf`, `font/otf`, `font/woff`, `font/woff2`
-
----
-
-## Local Development (no Docker)
-
-```bash
-# Terminal 1: Backend
-cd backend
-npm install
-COUNTERPARTY_URL=http://localhost:4000 node index.js
-
-# Terminal 2: Frontend
-cd frontend
-npm install
-REACT_APP_API_URL=http://localhost:3001/api npm start
-```
-
-The Counterparty server still needs to run in Docker:
-```bash
-docker-compose up counterparty-server
-```
+| Category | Examples |
+|----------|---------|
+| Images | `image/png`, `image/jpeg`, `image/webp`, `image/avif`, `image/heic`, `image/jxl`, `image/svg+xml` |
+| Audio | `audio/mpeg`, `audio/flac`, `audio/wav`, `audio/ogg;codecs=opus`, `audio/midi`, `audio/x-aiff` |
+| Video | `video/mp4`, `video/webm`, `video/quicktime`, `video/x-matroska`, `video/x-msvideo` |
+| Text / Code | `text/plain`, `text/html`, `text/markdown`, `text/x-python`, `text/x-rust`, `text/x-solidity`, `text/x-go` |
+| App / Data | `application/json`, `application/pdf`, `application/wasm`, `application/epub+zip`, `application/x-sqlite3` |
+| Archives | `application/zip`, `application/gzip`, `application/x-7z-compressed` |
+| 3D / Model | `model/gltf+json`, `model/gltf-binary`, `model/stl`, `model/obj`, `model/vnd.usdz+zip` |
+| Fonts | `font/ttf`, `font/otf`, `font/woff`, `font/woff2` |
+| Misc | `application/pgp-signature`, `application/x-chess-pgn`, `chemical/x-mdl-molfile` |
 
 ---
 
@@ -285,15 +224,77 @@ docker-compose up counterparty-server
 
 | Type | Format | Cost |
 |------|--------|------|
-| Free (numeric) | `A96XXXXXXXXX` | 0 XCP |
-| Named | `MYTOKEN` (4-12 chars, uppercase) | 0.5 XCP |
+| Free (numeric) | `A17<timestamp><random>` | 0 XCP |
+| Named | `MYTOKEN` (4–12 chars, uppercase) | 0.5 XCP |
 
 Use the **Auto** button in the UI to generate a free numeric asset name.
 
 ---
 
+## Local Development (no Docker)
+
+The Counterparty server must still run in Docker. Everything else can run locally.
+
+```bash
+# Terminal 1 — Counterparty only
+docker compose up counterparty-server
+
+# Terminal 2 — Backend
+cd backend
+npm install
+COUNTERPARTY_URL=http://localhost:4000 node index.js
+
+# Terminal 3 — Frontend
+cd frontend
+npm install
+REACT_APP_API_URL=http://localhost:3001/api npm start
+```
+
+---
+
+## Configuration
+
+### `config/server.conf`
+
+Copy from `server.conf.example` and adjust:
+
+```ini
+network=counterinscriptions
+port=4000
+host=0.0.0.0
+enable_all_protocol_changes=true
+max_message_size=52428800   # 50MB
+api_enabled=true
+ordinals_enabled=true
+```
+
+### Environment variables
+
+| Variable | Service | Default | Description |
+|----------|---------|---------|-------------|
+| `COUNTERPARTY_URL` | backend | `http://counterparty-server:4000` | Counterparty API endpoint |
+| `PORT` | backend | `3001` | Backend listen port |
+| `REACT_APP_API_URL` | frontend | `http://localhost:3001/api` | API base URL seen by the browser |
+| `FORCE` | counterparty | `0` | Pass `--force` to counterparty-server |
+| `ENABLE_ALL_PROTOCOL_CHANGES` | counterparty | `1` | Enable MIME + taproot support |
+
+---
+
+## How `patch_mime.py` Works
+
+At Docker build time, `patch_mime.py` patches the installed `counterparty-core` Python package to:
+
+1. Register 100+ MIME types in the Counterparty MIME registry
+2. Increase the API body size limit to 50MB
+3. Strip MIME parameters (e.g. `audio/ogg;codecs=opus` → `audio/ogg`) where required
+
+The patched image is built via `xcp-api-mime-Dockerfile` with the repo root as the build context, then used as the `counterparty-server` service in docker-compose.
+
+---
+
 ## Limitations
 
-- Counterparty chunking reassembly (multi-chunk files) is handled at the application layer. The inscription viewer must know to combine chunks `ASSET_1` + `ASSET_2` etc.
-- Batch mint requires files ≤350KB (one chunk). Large files need single mint with chunking.
-- Wallet signing requires UniSat or Xverse browser extension.
+- **Chunk reassembly** is handled at the application layer — viewers must know to combine `ASSET_1` + `ASSET_2` etc.
+- **Batch mint** requires files ≤350KB. Use single mint with auto-chunking for larger files.
+- **Wallet signing** requires the UniSat or Xverse browser extension.
+- **Counterparty runs in api-only mode** — no Bitcoin Core node is required for composing inscriptions.
