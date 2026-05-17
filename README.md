@@ -204,19 +204,21 @@ Both wallets support Testnet/Mainnet toggle from the UI. Switching networks in t
 
 ## Supported MIME Types
 
-See `GET /api/mime-types` for the live list. Summary:
+See `GET /api/mime-types` for the live list.
 
-| Category | Examples |
-|----------|---------|
-| Images | `image/png`, `image/jpeg`, `image/webp`, `image/avif`, `image/heic`, `image/jxl`, `image/svg+xml` |
-| Audio | `audio/mpeg`, `audio/flac`, `audio/wav`, `audio/ogg;codecs=opus`, `audio/midi`, `audio/x-aiff` |
-| Video | `video/mp4`, `video/webm`, `video/quicktime`, `video/x-matroska`, `video/x-msvideo` |
-| Text / Code | `text/plain`, `text/html`, `text/markdown`, `text/x-python`, `text/x-rust`, `text/x-solidity`, `text/x-go` |
-| App / Data | `application/json`, `application/pdf`, `application/wasm`, `application/epub+zip`, `application/x-sqlite3` |
-| Archives | `application/zip`, `application/gzip`, `application/x-7z-compressed` |
-| 3D / Model | `model/gltf+json`, `model/gltf-binary`, `model/stl`, `model/obj`, `model/vnd.usdz+zip` |
-| Fonts | `font/ttf`, `font/otf`, `font/woff`, `font/woff2` |
-| Misc | `application/pgp-signature`, `application/x-chess-pgn`, `chemical/x-mdl-molfile` |
+**Images:** `image/png` `image/jpeg` `image/gif` `image/webp` `image/svg+xml` `image/bmp` `image/avif` `image/tiff` `image/heic` `image/jxl` `image/x-icon`
+
+**Audio:** `audio/mpeg` `audio/ogg` `audio/ogg;codecs=opus` `audio/wav` `audio/flac` `audio/aac` `audio/mp4` `audio/webm` `audio/midi` `audio/x-aiff` `audio/x-m4a`
+
+**Video:** `video/mp4` `video/webm` `video/ogg` `video/quicktime` `video/x-matroska` `video/x-msvideo` `video/mpeg` `video/3gpp` `video/x-flv`
+
+**Text / Code:** `text/plain` `text/html` `text/css` `text/javascript` `text/markdown` `text/csv` `text/xml` `text/yaml` `text/x-python` `text/x-rust` `text/x-go` `text/x-solidity` `text/x-sh` `text/x-lua` `text/x-swift` `text/x-kotlin` `text/x-java` `text/x-ruby` `text/x-php` `text/x-toml`
+
+**App / Data:** `application/json` `application/pdf` `application/wasm` `application/octet-stream` `application/epub+zip` `application/x-sqlite3` `application/zip` `application/gzip` `application/x-7z-compressed` `application/geo+json` `application/ld+json` `application/pgp-signature` `application/vnd.ms-excel` `application/msword` `application/x-chess-pgn` `application/vnd.google-earth.kml+xml` `application/x-shockwave-flash` `chemical/x-mdl-molfile`
+
+**3D / Model:** `model/gltf+json` `model/gltf-binary` `model/stl` `model/obj` `model/vrml` `model/vnd.usdz+zip` `application/x-blender`
+
+**Fonts:** `font/ttf` `font/otf` `font/woff` `font/woff2`
 
 ---
 
