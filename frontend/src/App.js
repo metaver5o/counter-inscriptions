@@ -94,28 +94,40 @@ const S = {
 
 // ─── Wallet helpers ───────────────────────────────────────────────────────────
 
-async function signAndBroadcastUnisat(rawTxHex) {
-  // UniSat expects a PSBT for signing; for raw tx we use pushTx/signPsbt
-  // The unsigned tx from Counterparty is a raw PSBT-like hex — use signPsbt
-  try {
-    // Try signPsbt first (newer UniSat API)
-    const signed = await window.unisat.signPsbt(rawTxHex, { autoFinalized: true });
-    const txid = await window.unisat.pushTx(signed);
-    return { txid, method: 'unisat.signPsbt' };
-  } catch {
-    // Fallback: pushTx with raw hex
-    const txid = await window.unisat.pushTx({ rawtx: rawTxHex });
-    return { txid, method: 'unisat.pushTx' };
+async function signAndBroadcastUnisat(signingData, isPsbt) {
+  if (isPsbt) {
+    // PSBT base64 — UniSat signPsbt works correctly with this
+    try {
+      const signed = await window.unisat.signPsbt(signingData, { autoFinalized: true });
+      const txid = await window.unisat.pushTx(signed);
+      return { txid, method: 'unisat.signPsbt' };
+    } catch (e) {
+      throw new Error('signPsbt failed: ' + e.message);
+    }
+  } else {
+    // Raw unsigned tx hex — try pushTx directly
+    try {
+      const txid = await window.unisat.pushTx({ rawtx: signingData });
+      return { txid, method: 'unisat.pushTx' };
+    } catch (e) {
+      return { error: e.message, rawTx: signingData, method: 'manual', hint: 'Broadcast manually at mempool.space/tx/push' };
+    }
   }
 }
 
-async function signAndBroadcastXverse(rawTxHex) {
-  // Xverse uses signPsbt
-  const result = await window.BitcoinProvider.request('signPsbt', {
-    psbt: rawTxHex,
-    broadcast: true,
-  });
-  return { txid: result?.txid || result?.result?.txid, method: 'xverse.signPsbt' };
+async function signAndBroadcastXverse(signingData, isPsbt) {
+  try {
+    const provider = window.XverseProviders?.BitcoinProvider || window.BitcoinProvider;
+    if (!provider) throw new Error('Xverse provider not found');
+    const result = await provider.request('signPsbt', {
+      psbt: signingData,
+      broadcast: true,
+    });
+    const txid = result?.result?.txid || result?.txid;
+    return { txid, method: 'xverse.signPsbt' };
+  } catch (e) {
+    return { error: e.message, rawTx: signingData, method: 'manual' };
+  }
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
@@ -129,7 +141,7 @@ export default function App() {
   const [mode, setMode] = useState('single');         // single | batch
   const [destWallet, setDestWallet] = useState('');
   const [batchWallets, setBatchWallets] = useState('');
-  const [feeRate, setFeeRate] = useState(2.01);
+  const [feeRate, setFeeRate] = useState(2);
   const [status, setStatus] = useState(null);         // { type: ok|err|info, msg }
   const [txResults, setTxResults] = useState([]);
   const [minting, setMinting] = useState(false);
@@ -142,26 +154,34 @@ export default function App() {
     axios.get(`${API_URL}/health`).then(r => setHealth(r.data)).catch(() => setHealth({ status: 'degraded' }));
   }, []);
 
-  const connectWallet = async () => {
-    setStatus({ type: 'info', msg: 'Connecting wallet...' });
+  const connectWallet = async (type) => {
+    setStatus({ type: 'info', msg: `Connecting ${type}...` });
     try {
-      if (window.unisat) {
+      if (type === 'UniSat') {
+        if (!window.unisat) return alert('UniSat extension not found. Install from unisat.io');
         if (network === 'testnet') await window.unisat.switchNetwork('testnet');
         const accounts = await window.unisat.requestAccounts();
         setWallet({ address: accounts[0], type: 'UniSat' });
         setStatus({ type: 'ok', msg: `UniSat connected` });
-      } else if (window.BitcoinProvider) {
-        const resp = await window.BitcoinProvider.request('getAccounts', {
+
+      } else if (type === 'Xverse') {
+        if (!window.XverseProviders && !window.BitcoinProvider) {
+          return alert('Xverse extension not found. Install from xverse.app');
+        }
+        const provider = window.XverseProviders?.BitcoinProvider || window.BitcoinProvider;
+        const resp = await provider.request('getAccounts', {
           purposes: ['ordinals', 'payment'],
+          message: 'Counter-Inscriptions needs your Bitcoin address to mint ordinals',
         });
-        const addr = resp.find(a => a.purpose === 'ordinals')?.address || resp[0]?.address;
+        const accounts = resp.result || resp;
+        const addr = accounts.find(a => a.purpose === 'ordinals')?.address
+          || accounts.find(a => a.purpose === 'payment')?.address
+          || accounts[0]?.address;
         setWallet({ address: addr, type: 'Xverse' });
         setStatus({ type: 'ok', msg: `Xverse connected` });
-      } else {
-        alert('Please install UniSat or Xverse wallet extension.');
       }
     } catch (e) {
-      setStatus({ type: 'err', msg: 'Connection failed: ' + e.message });
+      setStatus({ type: 'err', msg: `Connection failed: ${e.message}` });
     }
   };
 
@@ -247,21 +267,30 @@ export default function App() {
         const signed = [];
         for (let i = 0; i < data.transactions.length; i++) {
           const tx = data.transactions[i];
-          const rawHex = tx.data?.result?.rawtransaction || tx.data?.rawtransaction || tx.data;
+          // Counterparty v11 with return_psbt=true returns:
+          // { result: { psbt: "base64...", rawtransaction: "hex..." } }
+          const txData = tx.data;
+          const psbt = txData?.result?.psbt;
+          const rawHex = txData?.result?.rawtransaction
+            || txData?.result?.tx_hex
+            || txData?.rawtransaction
+            || txData?.tx_hex;
+          // Use PSBT if available (preferred for wallet signing), else raw hex
+          const signingData = psbt || rawHex || (typeof txData === 'string' ? txData : JSON.stringify(txData));
           setStatus({ type: 'info', msg: `Signing chunk ${i + 1}/${data.transactions.length} in wallet...` });
           setProgress(75 + Math.round((i / data.transactions.length) * 20));
 
           let broadcastResult;
           try {
             if (wallet.type === 'UniSat') {
-              broadcastResult = await signAndBroadcastUnisat(rawHex);
+              broadcastResult = await signAndBroadcastUnisat(signingData, psbt);
             } else if (wallet.type === 'Xverse') {
-              broadcastResult = await signAndBroadcastXverse(rawHex);
+              broadcastResult = await signAndBroadcastXverse(signingData, psbt);
             } else {
-              broadcastResult = { txid: 'manual-broadcast-required', rawTx: rawHex };
+              broadcastResult = { txid: 'manual-broadcast-required', rawTx: rawHex || signingData };
             }
           } catch (sigErr) {
-            broadcastResult = { error: sigErr.message, rawTx: rawHex };
+            broadcastResult = { error: sigErr.message, rawTx: rawHex || signingData };
           }
 
           signed.push({
@@ -269,7 +298,7 @@ export default function App() {
             chunk: tx.chunk,
             total: tx.total_chunks,
             ...broadcastResult,
-            rawTx: rawHex,
+            rawTx: rawHex || signingData,
           });
         }
 
@@ -323,7 +352,14 @@ export default function App() {
       <div style={S.card}>
         <div style={S.sec}>Bitcoin Wallet</div>
         {!wallet ? (
-          <button style={S.btn} onClick={connectWallet}>Connect UniSat / Xverse</button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button style={{ ...S.btn, flex: 1 }} onClick={() => connectWallet('UniSat')}>
+              Connect UniSat
+            </button>
+            <button style={{ ...S.btn, flex: 1, background: 'linear-gradient(135deg,#f7931a,#e8820c)' }} onClick={() => connectWallet('Xverse')}>
+              Connect Xverse
+            </button>
+          </div>
         ) : (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
@@ -382,7 +418,7 @@ export default function App() {
           {/* Fee Rate */}
           <div style={S.row}>
             <label style={S.lbl}>Fee Rate: {feeRate} sat/vbyte</label>
-            <input type="range" min="1" max="50" step="0.5" value={feeRate}
+            <input type="range" min="2" max="50" step="0.5" value={feeRate}
               onChange={e => setFeeRate(parseFloat(e.target.value))}
               style={{ width: '100%', accentColor: '#7c6fff' }} />
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: '#444' }}>
@@ -495,6 +531,10 @@ export default function App() {
                   <div style={{ ...S.mono, marginTop: '4px', maxHeight: '80px', overflow: 'auto', background: '#080810', padding: '6px', borderRadius: '6px' }}>
                     {typeof tx.rawTx === 'string' ? tx.rawTx.slice(0, 200) + '…' : JSON.stringify(tx.rawTx).slice(0, 200)}
                   </div>
+                  <a href="https://mempool.space/tx/push" target="_blank" rel="noopener noreferrer"
+                    style={{ ...S.link, fontSize: '0.75rem', marginTop: '4px', display: 'inline-block' }}>
+                    → Broadcast manually on mempool.space
+                  </a>
                 </details>
               )}
               {/* Batch result fields */}

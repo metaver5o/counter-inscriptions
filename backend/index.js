@@ -69,6 +69,7 @@ async function composeIssuance({ walletAddress, asset, mimeType, hexData, satPer
     `inscription=true`,
     `mime_type=${encodeURIComponent(mimeType)}`,
     `sat_per_vbyte=${satPerVbyte}`,
+    `return_psbt=true`,   // return PSBT format so wallets can sign directly
     `description=`,
   ].join('&');
 
@@ -90,7 +91,101 @@ async function composeIssuance({ walletAddress, asset, mimeType, hexData, satPer
       timeout: 180_000,
     }
   );
-  return response.data;
+
+  const data = response.data;
+
+  // Enrich PSBT with witness UTXO data so wallets (UniSat/Xverse) can sign.
+  if (data?.result?.psbt) {
+    try {
+      data.result.psbt = await enrichPsbt(data.result.psbt);
+      // Debug: log full PSBT hex for inspection
+      const { Psbt } = require('bitcoinjs-lib');
+      const p = Psbt.fromBase64(enriched);
+      console.log('[PSBT] Input count:', p.data.inputs.length);
+      p.data.inputs.forEach((inp, i) => {
+        console.log(`[PSBT] Input ${i}:`, JSON.stringify({
+          hasWitnessUtxo: !!inp.witnessUtxo,
+          witnessUtxoValue: inp.witnessUtxo?.value,
+          witnessUtxoScript: inp.witnessUtxo?.script?.toString('hex'),
+          hasTapInternalKey: !!inp.tapInternalKey,
+          tapInternalKey: inp.tapInternalKey?.toString('hex'),
+          hasNonWitnessUtxo: !!inp.nonWitnessUtxo,
+        }));
+      });
+    } catch (e) {
+      console.warn('[PSBT] Could not enrich PSBT:', e.message);
+    }
+  }
+
+  return data;
+}
+
+/**
+ * Fetch witness UTXO for each input and inject into the PSBT.
+ * Uses mempool.space API to get the previous tx output details.
+ */
+async function enrichPsbt(psbtBase64) {
+  const { Psbt, Transaction } = require('bitcoinjs-lib');
+
+  let psbt;
+  try {
+    psbt = Psbt.fromBase64(psbtBase64);
+  } catch {
+    return psbtBase64;
+  }
+
+  for (let i = 0; i < psbt.data.inputs.length; i++) {
+    const txInput = psbt.txInputs[i];
+    if (!txInput) continue;
+
+    const txid = Buffer.from(txInput.hash).reverse().toString('hex');
+    const vout = txInput.index;
+
+    try {
+      // Fetch the output details directly from mempool UTXO endpoint
+      // This gives us the exact scriptpubkey the wallet needs
+      const outRes = await axios.get(`https://mempool.space/api/tx/${txid}`, { timeout: 10_000 });
+      const txData = outRes.data;
+      const output = txData.vout?.[vout];
+
+      if (!output) continue;
+
+      const scriptBuf = Buffer.from(output.scriptpubkey, 'hex');
+      const value = output.value;
+
+      console.log(`[PSBT] Input ${i}: ${txid}:${vout} type=${output.scriptpubkey_type} value=${value} script=${output.scriptpubkey}`);
+
+      if (output.scriptpubkey_type === 'v0_p2wpkh' || output.scriptpubkey_type === 'v0_p2wsh') {
+        // Native SegWit — use witnessUtxo
+        psbt.updateInput(i, { witnessUtxo: { script: scriptBuf, value } });
+
+      } else if (output.scriptpubkey_type === 'p2sh') {
+        // P2SH (possibly P2SH-P2WPKH) — need full raw tx as nonWitnessUtxo
+        const rawRes = await axios.get(`https://mempool.space/api/tx/${txid}/hex`, { timeout: 10_000 });
+        const rawTx = Buffer.from(rawRes.data, 'hex');
+        psbt.updateInput(i, { nonWitnessUtxo: rawTx });
+
+      } else if (output.scriptpubkey_type === 'v1_p2tr') {
+        // Taproot
+        const xOnlyPubkey = scriptBuf.slice(2);
+        psbt.updateInput(i, {
+          witnessUtxo: { script: scriptBuf, value },
+          tapInternalKey: xOnlyPubkey,
+        });
+
+      } else {
+        // Legacy P2PKH or unknown — use full raw tx
+        const rawRes = await axios.get(`https://mempool.space/api/tx/${txid}/hex`, { timeout: 10_000 });
+        const rawTx = Buffer.from(rawRes.data, 'hex');
+        psbt.updateInput(i, { nonWitnessUtxo: rawTx });
+      }
+
+    } catch (e) {
+      console.warn(`[PSBT] Could not enrich input ${i} (${txid}:${vout}):`, e.message);
+    }
+  }
+
+  return psbt.toBase64();
 }
 
 function handleXcpError(res, error) {

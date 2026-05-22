@@ -1,4 +1,4 @@
-.PHONY: default up down clean reset
+.PHONY: default up down clean reset bootstrap bootstrap-force
 
 # Default target runs the existing stack straight without wiping your data
 default: up
@@ -20,3 +20,11 @@ clean:
 
 # Stop everything, wipe data fragments, and build fresh
 reset: down clean up
+
+# Bootstrap from compressed snapshots (skips if DB files exist)
+bootstrap:
+	@echo "📦 Bootstrapping from snapshots..."
+	docker compose --profile bootstrap run --rm counterparty-bootstrap
+
+# Force bootstrap by wiping existing DBs first
+bootstrap-force: clean bootstrap
