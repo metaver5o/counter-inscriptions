@@ -53,6 +53,7 @@ services:
     container_name: counterinscriptions-tunnel
     profiles: [tunnel]
     restart: unless-stopped
-    command: tunnel --no-autoupdate --url http://frontend:80
+    # Call the binary directly instead of through sh
+    entrypoint: ["cloudflared", "tunnel", "--no-autoupdate", "--url", "http://frontend:80", "--http-host-header", "frontend", "--protocol", "http2"]
     depends_on:
       - frontend
