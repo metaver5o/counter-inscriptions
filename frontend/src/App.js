@@ -94,23 +94,37 @@ const S = {
 
 // ─── Wallet helpers ───────────────────────────────────────────────────────────
 
+async function broadcastViaBackend(signedData) {
+  // Try signed_tx_hex first; if it looks like a PSBT, send as signed_psbt
+  const isBase64 = /^[A-Za-z0-9+/]+=*$/.test(signedData) && signedData.length % 4 === 0 && signedData.length > 100;
+  const body = isBase64 ? { signed_psbt: signedData } : { signed_tx_hex: signedData };
+  const r = await axios.post(`${API_URL}/broadcast`, body, { timeout: 60_000 });
+  return r.data?.txid || null;
+}
+
 async function signAndBroadcastUnisat(signingData, isPsbt) {
   if (isPsbt) {
-    // PSBT base64 — UniSat signPsbt works correctly with this
     try {
       const signed = await window.unisat.signPsbt(signingData, { autoFinalized: true });
+      // Broadcast via our Counterparty server
+      try {
+        const txid = await broadcastViaBackend(signed);
+        if (txid) return { txid, method: 'counterparty-server' };
+      } catch (broadcastErr) {
+        console.warn('Counterparty broadcast failed, falling back to wallet push:', broadcastErr.message);
+      }
+      // Fallback: push via UniSat wallet
       const txid = await window.unisat.pushTx(signed);
-      return { txid, method: 'unisat.signPsbt' };
+      return { txid, method: 'unisat.pushTx' };
     } catch (e) {
       throw new Error('signPsbt failed: ' + e.message);
     }
   } else {
-    // Raw unsigned tx hex — try pushTx directly
     try {
       const txid = await window.unisat.pushTx({ rawtx: signingData });
       return { txid, method: 'unisat.pushTx' };
     } catch (e) {
-      return { error: e.message, rawTx: signingData, method: 'manual', hint: 'Broadcast manually at mempool.space/tx/push' };
+      return { error: e.message, rawTx: signingData, method: 'manual', hint: 'Broadcast manually via counter-inscriptions server' };
     }
   }
 }
@@ -119,11 +133,19 @@ async function signAndBroadcastXverse(signingData, isPsbt) {
   try {
     const provider = window.XverseProviders?.BitcoinProvider || window.BitcoinProvider;
     if (!provider) throw new Error('Xverse provider not found');
+    // Sign without auto-broadcasting so we can route through our server
     const result = await provider.request('signPsbt', {
       psbt: signingData,
-      broadcast: true,
+      broadcast: false,
     });
-    const txid = result?.result?.txid || result?.txid;
+    const signedPsbt = result?.result?.psbt || result?.result?.signedPsbt || result?.psbt;
+    if (signedPsbt) {
+      const txid = await broadcastViaBackend(signedPsbt);
+      if (txid) return { txid, method: 'counterparty-server' };
+    }
+    // Fallback: re-sign with broadcast:true
+    const result2 = await provider.request('signPsbt', { psbt: signingData, broadcast: true });
+    const txid = result2?.result?.txid || result2?.txid;
     return { txid, method: 'xverse.signPsbt' };
   } catch (e) {
     return { error: e.message, rawTx: signingData, method: 'manual' };
@@ -328,7 +350,7 @@ export default function App() {
     <div style={S.root}>
       <header style={S.hdr}>
         <h1 style={S.title}>Counter-Inscriptions</h1>
-        <p style={S.sub}>Mint any MIME type as Ordinals via Counterparty · Taproot</p>
+        <p style={S.sub}>Mint any MIME type as XCP Inscriptions via Counterparty</p>
         {health && (
           <div style={{ marginTop: '8px', fontSize: '0.75rem', color: health.status === 'ok' ? '#4a8a4a' : '#8a4a4a' }}>
             ● XCP Server: {health.status === 'ok' ? 'Connected' : 'Unreachable'}
@@ -350,7 +372,7 @@ export default function App() {
 
       {/* Wallet Card */}
       <div style={S.card}>
-        <div style={S.sec}>Bitcoin Wallet</div>
+        <div style={S.sec}>Wallet</div>
         {!wallet ? (
           <div style={{ display: 'flex', gap: '8px' }}>
             <button style={{ ...S.btn, flex: 1 }} onClick={() => connectWallet('UniSat')}>
@@ -518,7 +540,7 @@ export default function App() {
               {tx.txid && !tx.error && (
                 <div>
                   <span style={{ ...S.mono, color: '#7cbc7c' }}>✓ TXID: </span>
-                  <a href={`https://mempool.space/tx/${tx.txid}`} target="_blank" rel="noopener noreferrer" style={S.link}>
+                  <a href={`https://xchain.io/tx/${tx.txid}`} target="_blank" rel="noopener noreferrer" style={S.link}>
                     <span style={S.mono}>{tx.txid.slice(0, 20)}…</span>
                   </a>
                   <span style={{ fontSize: '0.7rem', color: '#444', marginLeft: '8px' }}>via {tx.method}</span>
@@ -531,10 +553,9 @@ export default function App() {
                   <div style={{ ...S.mono, marginTop: '4px', maxHeight: '80px', overflow: 'auto', background: '#080810', padding: '6px', borderRadius: '6px' }}>
                     {typeof tx.rawTx === 'string' ? tx.rawTx.slice(0, 200) + '…' : JSON.stringify(tx.rawTx).slice(0, 200)}
                   </div>
-                  <a href="https://mempool.space/tx/push" target="_blank" rel="noopener noreferrer"
-                    style={{ ...S.link, fontSize: '0.75rem', marginTop: '4px', display: 'inline-block' }}>
-                    → Broadcast manually on mempool.space
-                  </a>
+                  <span style={{ fontSize: '0.75rem', color: '#555', marginTop: '4px', display: 'inline-block' }}>
+                    → Copy the raw TX above and broadcast via your wallet or counter-inscriptions node
+                  </span>
                 </details>
               )}
               {/* Batch result fields */}
@@ -546,7 +567,7 @@ export default function App() {
       )}
 
       <footer style={S.footer}>
-        Counter-Inscriptions · Counterparty + Taproot · All MIME types supported
+        Counter-Inscriptions · XCP Native Inscriptions · All MIME types supported
       </footer>
     </div>
   );
