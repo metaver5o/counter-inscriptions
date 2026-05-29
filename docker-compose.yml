@@ -22,8 +22,8 @@ services:
       - ./data/counterparty-cache:/root/.cache/counterparty
       - ./config/server.conf:/root/.config/counterparty/server.conf
     environment:
-      - FORCE=0
-      - ENABLE_ALL_PROTOCOL_CHANGES=1
+      - FORCE=1
+      - ENABLE_ALL_PROTOCOL_CHANGES=0
 
   backend:
     build: ./backend
@@ -45,14 +45,15 @@ services:
       - "3000:80"
     depends_on:
       - backend
-    environment:
-      - REACT_APP_API_URL=http://localhost:3001/api
+    # environment:
+      # - REACT_APP_API_URL=http://localhost:3001/api
 
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: counterinscriptions-tunnel
     profiles: [tunnel]
     restart: unless-stopped
-    command: tunnel --no-autoupdate --url http://frontend:80
+    # Call the binary directly instead of through sh
+    entrypoint: ["cloudflared", "tunnel", "--no-autoupdate", "--url", "http://frontend:80", "--http-host-header", "frontend", "--protocol", "http2"]
     depends_on:
       - frontend

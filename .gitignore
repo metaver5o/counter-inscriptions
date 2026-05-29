@@ -48,3 +48,4 @@ xcp-api-mime/output_txs/
 
 # Claude settings
 .claude/
+.aider*

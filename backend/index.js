@@ -69,6 +69,7 @@ async function composeIssuance({ walletAddress, asset, mimeType, hexData, satPer
     `inscription=true`,
     `mime_type=${encodeURIComponent(mimeType)}`,
     `sat_per_vbyte=${satPerVbyte}`,
+    `return_psbt=true`,   // return PSBT format so wallets can sign directly
     `description=`,
   ].join('&');
 
@@ -90,7 +91,90 @@ async function composeIssuance({ walletAddress, asset, mimeType, hexData, satPer
       timeout: 180_000,
     }
   );
-  return response.data;
+
+  const data = response.data;
+
+  // Enrich PSBT with witness UTXO data so wallets (UniSat/Xverse) can sign.
+  // UTXO data comes from the Counterparty server — no external APIs needed.
+  if (data?.result?.psbt) {
+    try {
+      data.result.psbt = await enrichPsbt(data.result.psbt, walletAddress);
+    } catch (e) {
+      console.warn('[PSBT] Could not enrich PSBT:', e.message);
+    }
+  }
+
+  return data;
+}
+
+/**
+ * Fetch witness UTXO for each input and inject into the PSBT.
+ * Uses the local Counterparty server's UTXO index — no external APIs.
+ */
+async function enrichPsbt(psbtBase64, walletAddress) {
+  const { Psbt } = require('bitcoinjs-lib');
+
+  let psbt;
+  try {
+    psbt = Psbt.fromBase64(psbtBase64);
+  } catch {
+    return psbtBase64;
+  }
+
+  // Load UTXOs from the Counterparty server (it tracks them via its Bitcoin backend)
+  const utxoMap = {};
+  try {
+    const r = await axios.get(
+      `${COUNTERPARTY_URL}/v2/addresses/${walletAddress}/utxos?limit=1000`,
+      { timeout: 15_000 }
+    );
+    for (const u of (r.data?.result || [])) {
+      const script = u.script || u.scriptpubkey || u.script_hex || '';
+      utxoMap[`${u.txid}:${u.vout}`] = { script, value: u.value ?? u.amount ?? 0 };
+    }
+    console.log(`[PSBT] Loaded ${Object.keys(utxoMap).length} UTXOs from Counterparty for ${walletAddress}`);
+  } catch (e) {
+    console.warn('[PSBT] Could not fetch UTXOs from Counterparty server:', e.message);
+  }
+
+  for (let i = 0; i < psbt.data.inputs.length; i++) {
+    const txInput = psbt.txInputs[i];
+    if (!txInput) continue;
+
+    const txid = Buffer.from(txInput.hash).reverse().toString('hex');
+    const vout = txInput.index;
+    const utxo = utxoMap[`${txid}:${vout}`];
+
+    if (!utxo?.script) {
+      console.warn(`[PSBT] Input ${i}: UTXO ${txid}:${vout} not in Counterparty index — skipping`);
+      continue;
+    }
+
+    const scriptBuf = Buffer.from(utxo.script, 'hex');
+    const value = utxo.value;
+
+    // Determine script type from the scriptpubkey bytes
+    if (scriptBuf.length === 34 && scriptBuf[0] === 0x51 && scriptBuf[1] === 0x20) {
+      // v1_p2tr — Taproot key-path
+      psbt.updateInput(i, {
+        witnessUtxo: { script: scriptBuf, value },
+        tapInternalKey: scriptBuf.slice(2),
+      });
+    } else if (scriptBuf.length === 22 && scriptBuf[0] === 0x00 && scriptBuf[1] === 0x14) {
+      // v0_p2wpkh — native SegWit
+      psbt.updateInput(i, { witnessUtxo: { script: scriptBuf, value } });
+    } else if (scriptBuf.length === 34 && scriptBuf[0] === 0x00 && scriptBuf[1] === 0x20) {
+      // v0_p2wsh — native SegWit multisig
+      psbt.updateInput(i, { witnessUtxo: { script: scriptBuf, value } });
+    } else {
+      // Legacy / P2SH — needs full raw tx; not available without an external call
+      console.warn(`[PSBT] Input ${i}: legacy/P2SH script type — cannot enrich without raw tx`);
+    }
+
+    console.log(`[PSBT] Input ${i}: ${txid}:${vout} value=${value} script=${utxo.script.slice(0, 8)}…`);
+  }
+
+  return psbt.toBase64();
 }
 
 function handleXcpError(res, error) {
@@ -296,6 +380,46 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     needsChunking: chunks.length > 1,
     hexPreview: bufToHex(req.file.buffer.slice(0, 256)),
   });
+});
+
+/**
+ * POST /api/broadcast
+ * Finalize a signed PSBT (or accept raw tx hex) and broadcast via the Counterparty server.
+ * Accepts JSON body: { signed_psbt: "<base64>" } OR { signed_tx_hex: "<hex>" }
+ */
+app.post('/api/broadcast', async (req, res) => {
+  try {
+    let { signed_psbt, signed_tx_hex } = req.body;
+
+    if (!signed_tx_hex && signed_psbt) {
+      const { Psbt } = require('bitcoinjs-lib');
+      try {
+        let p;
+        try { p = Psbt.fromBase64(signed_psbt); } catch { p = Psbt.fromHex(signed_psbt); }
+        p.finalizeAllInputs();
+        signed_tx_hex = p.extractTransaction().toHex();
+      } catch (e) {
+        // Maybe it's already a raw tx hex — pass through as-is
+        signed_tx_hex = signed_psbt;
+      }
+    }
+
+    if (!signed_tx_hex) {
+      return res.status(400).json({ error: 'signed_tx_hex or signed_psbt required' });
+    }
+
+    const r = await axios.post(
+      `${COUNTERPARTY_URL}/v2/transactions/broadcast`,
+      `signed_tx_hex=${encodeURIComponent(signed_tx_hex)}`,
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 60_000 }
+    );
+
+    const result = r.data?.result;
+    const txid = typeof result === 'string' ? result : (result?.tx_hash || result?.txid || result?.id);
+    return res.json({ success: true, txid, result: r.data });
+  } catch (error) {
+    return handleXcpError(res, error);
+  }
 });
 
 /** GET /api/balance/:address */
