@@ -179,8 +179,12 @@ async function enrichPsbt(psbtBase64, walletAddress) {
 
 function handleXcpError(res, error) {
   const raw = error.response?.data;
-  const msg = raw && typeof raw === 'object' ? JSON.stringify(raw) : (raw || error.message || 'Unknown error');
-  console.error('[XCP Error]', msg);
+  // Counterparty (Flask) can return an HTML error page — don't leak that to clients
+  const isHtml = typeof raw === 'string' && raw.trimStart().startsWith('<');
+  const msg = isHtml
+    ? `Counterparty server error: HTTP ${error.response?.status ?? 'unknown'}`
+    : raw && typeof raw === 'object' ? JSON.stringify(raw) : (raw || error.message || 'Unknown error');
+  console.error('[XCP Error]', isHtml ? `HTML response (${error.response?.status})` : msg);
 
   if (String(msg).includes('insufficient funds')) {
     return res.status(402).json({ error: 'Insufficient funds', details: 'Check BTC balance for fees + 0.5 XCP for named asset registration' });
@@ -436,7 +440,7 @@ app.get('/api/balance/:address', async (req, res) => {
 app.get('/api/health', async (req, res) => {
   try {
     const r = await axios.get(`${COUNTERPARTY_URL}/v2/`, { timeout: 5_000 });
-    return res.json({ status: 'ok', counterparty: 'reachable', counterparty_url: COUNTERPARTY_URL, version: r.data?.version });
+    return res.json({ status: 'ok', counterparty: 'reachable', counterparty_url: COUNTERPARTY_URL, version: r.data?.result?.version });
   } catch (error) {
     return res.json({ status: 'degraded', counterparty: 'unreachable', counterparty_url: COUNTERPARTY_URL, error: error.message });
   }

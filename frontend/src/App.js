@@ -237,13 +237,15 @@ export default function App() {
   }, [asset]);
 
   const genAsset = () => {
-    // Counterparty numeric assets must be A + 18-19 digit number
-    // Valid range: A1000000000000000000 to A9999999999999999999 (19 digits)
-    const hi = BigInt('9999999999999999999');
+    // Counterparty numeric assets: A + 19-digit number in [1e18, 1e19)
+    // Use crypto.getRandomValues — range exceeds Number.MAX_SAFE_INTEGER so Math.random() loses precision
     const lo = BigInt('1000000000000000000');
-    const range = hi - lo;
-    const rand = lo + BigInt(Math.floor(Math.random() * Number(range)));
-    setAsset(`A${rand.toString()}`);
+    const range = BigInt('9000000000000000000'); // 9e18 values
+    const bytes = new Uint8Array(8);
+    crypto.getRandomValues(bytes);
+    let rand = 0n;
+    for (const b of bytes) rand = (rand << 8n) | BigInt(b);
+    setAsset(`A${(lo + (rand % range)).toString()}`);
   };
 
   const mint = async () => {
@@ -368,6 +370,11 @@ export default function App() {
             <button style={S.net(network === 'testnet')} onClick={() => setNetwork('testnet')}>⬤ Testnet</button>
           </div>
         </div>
+        {network === 'testnet' && (
+          <div style={{ marginTop: '10px', fontSize: '0.75rem', color: '#a87c30', background: '#1a1400', border: '1px solid #3a2a00', borderRadius: '6px', padding: '8px 10px' }}>
+            ⚠ Wallet will switch to testnet, but the XCP inscription server only supports mainnet. Mints will be composed against mainnet.
+          </div>
+        )}
       </div>
 
       {/* Wallet Card */}
@@ -464,7 +471,7 @@ export default function App() {
                 <span style={{ ...S.mono, color: '#7c6fff' }}>{fileInfo.mimeType}</span>
               </div>
               <div style={{ display: 'flex', gap: '12px', fontSize: '0.78rem', color: '#555' }}>
-                <span>{fileInfo.sizeKB} KB</span>
+                <span>{fileInfo.sizeBytes < 1024 ? `${fileInfo.sizeBytes} B` : `${fileInfo.sizeKB} KB`}</span>
                 {fileInfo.needsChunking && <span style={{ color: '#a855f7' }}>⚡ {fileInfo.totalChunks} chunks</span>}
               </div>
             </div>
